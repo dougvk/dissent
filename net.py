@@ -45,6 +45,10 @@ class Net:
 	def public_key_string(self):
 		return AnonCrypto.pub_key_to_str(self.pubKey)
 	
+	def private_key_string(self):
+		return AnonCrypto.priv_key_to_str(self.privKey)
+	
+	
 	
 
 #def main():
