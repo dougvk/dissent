@@ -76,12 +76,14 @@ class Ui_DissentWindow(object):
         self.verticalLayout_2.addWidget(self.label)
         self.privateKeyField = QtGui.QTextEdit(self.verticalLayoutWidget_2)
         self.privateKeyField.setObjectName("privateKeyField")
+        self.privateKeyField.setReadOnly(True)
         self.verticalLayout_2.addWidget(self.privateKeyField)
         self.label_2 = QtGui.QLabel(self.verticalLayoutWidget_2)
         self.label_2.setObjectName("label_2")
         self.verticalLayout_2.addWidget(self.label_2)
         self.publicKeyField = QtGui.QTextEdit(self.verticalLayoutWidget_2)
         self.publicKeyField.setObjectName("publicKeyField")
+        self.publicKeyField.setReadOnly(True)
         self.verticalLayout_2.addWidget(self.publicKeyField)
         self.verticalLayoutWidget_3 = QtGui.QWidget(self.centralwidget)
         self.verticalLayoutWidget_3.setGeometry(QtCore.QRect(10, 160, 361, 381))
@@ -100,8 +102,9 @@ class Ui_DissentWindow(object):
         DissentWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(DissentWindow)
-        QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.temp.establish_keys)
+        #QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.temp.establish_keys)
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
+        self.display_keys()
 
     def retranslateUi(self, DissentWindow):
         DissentWindow.setWindowTitle(QtGui.QApplication.translate("DissentWindow", "µDissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -117,3 +120,7 @@ class Ui_DissentWindow(object):
         self.label.setText(QtGui.QApplication.translate("DissentWindow", "My Private Key", None, QtGui.QApplication.UnicodeUTF8))
         self.label_2.setText(QtGui.QApplication.translate("DissentWindow", "My Public Key", None, QtGui.QApplication.UnicodeUTF8))
         self.label_4.setText(QtGui.QApplication.translate("DissentWindow", "Debug", None, QtGui.QApplication.UnicodeUTF8))
+
+    def display_keys(self):
+        self.publicKeyField.setPlainText(self.temp.public_key_string())
+        self.privateKeyField.setPlainText(self.temp.private_key_string())
