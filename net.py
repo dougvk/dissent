@@ -23,8 +23,8 @@ class Net:
 				
 		try:
 			# load existing keys
-			privKey = M2Crypto.RSA.load_key('config/priv')
-			pubKey = M2Crypto.RSA.load_pub_key('config/pub')
+			self.privKey = M2Crypto.RSA.load_key('config/priv')
+			self.pubKey = M2Crypto.RSA.load_pub_key('config/pub')
 			
 		except:
 			# generate new keys
@@ -37,13 +37,13 @@ class Net:
 			# delete existing configuration information
 			
 			# load keys
-			privKey = M2Crypto.RSA.load_key('config/priv')
-			pubKey = M2Crypto.RSA.load_pub_key('config/pub')
+			self.privKey = M2Crypto.RSA.load_key('config/priv')
+			self.pubKey = M2Crypto.RSA.load_pub_key('config/pub')
 		
 	
 	# print public key as string		
 	def public_key_string(self):
-		return pub_key_to_str(pubKey)
+		return AnonCrypto.pub_key_to_str(self.pubKey)
 	
 	
 
@@ -51,6 +51,8 @@ class Net:
 	
 #	newNet = Net()
 #	newNet.establish_keys()
+#	print newNet.public_key_string()
+	
 	
 	
 
