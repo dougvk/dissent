@@ -7,11 +7,48 @@
 # WARNING! All changes made in this file will be lost!
 
 from PyQt4 import QtCore, QtGui
+from PyQt4.QtNetwork import QTcpServer, QTcpSocket, QHostAddress
+from PyQt4.Qt import QMessageBox, QString
+from PyQt4.QtCore import QDataStream
 import net
+
+class TcpServer(QTcpServer):
+    def __init__(self):
+        super(TcpServer, self).__init__()
+        print "INIT TCP"
+
+    def incomingConnection(self, socketId):
+        socket = Socket(self)
+        socket.setSocketDescriptor(socketId)
+
+class Socket(QTcpSocket):
+    def __init__(self, parent=None):
+        super(Socket, self).__init__(parent)
+        self.connect(self, QtCore.SIGNAL("readyRead()"), self.readRequest)
+        self.connect(self, QtCore.SIGNAL("disconnected()"), self.deleteLater)
+        self.nextBlockSize = 0
+        print "INIT SOCKET"
+
+    def readRequest(self):
+        stream = QDataStream(self)
+
+        if self.nextBlockSize == 0:
+            if self.bytesAvailable() < 2:
+                return
+        
+        message = QString()
+        stream >> message
+        print "---" + str(message) + "---"
 
 class Ui_DissentWindow(object):
     def setupUi(self, DissentWindow):
-        self.temp = net.Net()
+        self.net = net.Net()
+
+        self.tcpServer = TcpServer()
+        if not self.tcpServer.listen(QHostAddress("127.0.0.1"), 20000):
+            print self.tcpServer.errorString()
+            return
+
         DissentWindow.setObjectName("DissentWindow")
         DissentWindow.resize(835, 576)
         self.centralwidget = QtGui.QWidget(DissentWindow)
@@ -122,5 +159,5 @@ class Ui_DissentWindow(object):
         self.label_4.setText(QtGui.QApplication.translate("DissentWindow", "Debug", None, QtGui.QApplication.UnicodeUTF8))
 
     def display_keys(self):
-        self.publicKeyField.setPlainText(self.temp.public_key_string())
-        self.privateKeyField.setPlainText(self.temp.private_key_string())
+        self.publicKeyField.setPlainText(self.net.public_key_string())
+        self.privateKeyField.setPlainText(self.net.private_key_string())
