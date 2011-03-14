@@ -35,22 +35,6 @@ class Net:
 			privKey = M2Crypto.RSA.load_key('config/priv')
 			pubKey = M2Crypto.RSA.load_pub_key('config/pub')
 
-
-	# invite a new node to join
-	def invite_node(self, nIP, nPort, nPub):
-			
-		
-			
-
-	# open a socket with all existing peers 
-	def open_sockets(self):
-		
-			print "opening sockets"
-		
-		
-
-			
-
 #def main():
 	
 #	newNet = Net()
