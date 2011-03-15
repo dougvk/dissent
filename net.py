@@ -47,9 +47,9 @@ class Net:
             self.pubKey = M2Crypto.RSA.load_pub_key('config/pub')
 
 
+    # called by GUI right now -- just for testing purposes
     def testMessage(self):
-        self.thread.start()
-        print "got here with no error..."
+        self.thread.run("testing")
 
     # print public key as string		
     def public_key_string(self):
@@ -59,7 +59,6 @@ class Net:
     # print private key as string
     def private_key_string(self):
         return AnonCrypto.priv_key_to_str(self.privKey)
-
 
     # send invitation
     def send_invitation(self, Host, Port, Pub):
@@ -84,29 +83,27 @@ class GuiClient(QThread):
         self.nextBlockSize = 0
         self.request = None
 
-    def run(self):
-        self.book("!?!?!?!!!!")
-
-    def closeEvent(self, event):
-        self.socket.close()
-        event.accept()
-
-    def book(self, msg):
+    # called by thread
+    def run(self, msg):
         self.issueRequest(QString(msg))
 
-    def issueRequest(self, action):
+    # package msg into stream, send to GUI
+    def issueRequest(self, msg):
         self.request = QByteArray()
         stream = QDataStream(self.request, QIODevice.WriteOnly)
         stream.setVersion(QDataStream.Qt_4_2)
         stream.writeUInt16(0)
-        stream << action
+        stream << msg
         stream.device().seek(0)
+
+        # prepend number of bits
         stream.writeUInt16(self.request.size() - SIZEOF_UINT16)
         if self.socket.isOpen():
             self.socket.close()
         self.socket.connectToHost("localhost", PORT)
         self.sendRequest()
 
+    # send to GUI
     def sendRequest(self):
         self.nextBlockSize = 0
         self.socket.write(self.request)

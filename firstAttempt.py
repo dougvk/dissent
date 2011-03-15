@@ -17,33 +17,39 @@ SIZEOF_UINT16 = 2
 class TcpServer(QTcpServer):
     def __init__(self):
         super(TcpServer, self).__init__()
-        print "INIT TCP"
 
     def incomingConnection(self, socketId):
         socket = Socket(self)
         socket.setSocketDescriptor(socketId)
 
+        # create socket, connect signal to signal GUI is listening for
+        self.connect(socket, QtCore.SIGNAL("socketReceived(QString)"), QtCore.SIGNAL("messageReceived(QString)"))
+
 class Socket(QTcpSocket):
     def __init__(self, parent=None):
         super(Socket, self).__init__(parent)
         self.connect(self, QtCore.SIGNAL("readyRead()"), self.readRequest)
-        self.connect(self, QtCore.SIGNAL("disconnected()"), self.deleteLater)
         self.nextBlockSize = 0
-        print "INIT SOCKET"
 
+    # read data sent over localhost TCP
     def readRequest(self):
         stream = QDataStream(self)
         stream.setVersion(QDataStream.Qt_4_2)
 
+        # make sure enough/all bytes are present
         if self.nextBlockSize == 0:
             if self.bytesAvailable() < SIZEOF_UINT16:
                 return
             self.nextBlockSize = stream.readUInt16()
+        if self.bytesAvailable() < self.nextBlockSize:
+            return
 
         action = QString()
         stream >> action
         uni_action = unicode(action)
-        print "---" + uni_action + "---"
+
+        # populate up to GUI
+        self.emit(QtCore.SIGNAL("socketReceived(QString)"), QString("<b>Network:</b> " + uni_action))
 
 class Ui_DissentWindow(object):
     def setupUi(self, DissentWindow):
@@ -51,6 +57,9 @@ class Ui_DissentWindow(object):
         if not self.tcpServer.listen(QHostAddress("127.0.0.1"), 20000):
             print self.tcpServer.errorString()
             return
+
+        # register GUI to listen for TCP signals (to display on debug screen)
+        QtCore.QObject.connect(self.tcpServer,QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
 
         self.net = net.Net()
 
@@ -144,6 +153,8 @@ class Ui_DissentWindow(object):
         DissentWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(DissentWindow)
+
+        # make this button temporarily force debug messages for testing
         QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.net.testMessage)
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
         self.display_keys()
@@ -163,6 +174,11 @@ class Ui_DissentWindow(object):
         self.label_2.setText(QtGui.QApplication.translate("DissentWindow", "My Public Key", None, QtGui.QApplication.UnicodeUTF8))
         self.label_4.setText(QtGui.QApplication.translate("DissentWindow", "Debug", None, QtGui.QApplication.UnicodeUTF8))
 
+    # display any messages populated up to GUI
+    def displayMessage(self, msg):
+        self.debugField.append(msg)
+
+    # show keys on screen
     def display_keys(self):
         self.publicKeyField.setPlainText(self.net.public_key_string())
         self.privateKeyField.setPlainText(self.net.private_key_string())
