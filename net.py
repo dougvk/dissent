@@ -1,5 +1,6 @@
 import os.path
 import random
+import socket
 from anon_crypto import AnonCrypto
 import M2Crypto.RSA
 from M2Crypto import Rand
@@ -7,8 +8,6 @@ from M2Crypto import Rand
 class Net:
 		
 	def __init__(self):
-		
-		# globals
 		self.privKey = ''
 		self.pubKey = ''
 		self.establish_keys()
@@ -45,8 +44,27 @@ class Net:
 	def public_key_string(self):
 		return AnonCrypto.pub_key_to_str(self.pubKey)
 	
+	
+	# print private key as string
 	def private_key_string(self):
 		return AnonCrypto.priv_key_to_str(self.privKey)
+	
+	
+	# send invitation
+	def send_invitation(self, Host, Port, Pub):
+		
+		# resolve host
+		Host = gethostbyname(Host)
+		
+		# establish socket	
+		try:		
+			sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+			sock.connect((Host, Port))
+				
+	
+	
+		except:
+			print "unable to connect to host %s%d" % (Host, Port)
 	
 	
 	
