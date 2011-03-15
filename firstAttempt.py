@@ -12,6 +12,8 @@ from PyQt4.Qt import QMessageBox, QString
 from PyQt4.QtCore import QDataStream
 import net
 
+SIZEOF_UINT16 = 2
+
 class TcpServer(QTcpServer):
     def __init__(self):
         super(TcpServer, self).__init__()
@@ -31,23 +33,26 @@ class Socket(QTcpSocket):
 
     def readRequest(self):
         stream = QDataStream(self)
+        stream.setVersion(QDataStream.Qt_4_2)
 
         if self.nextBlockSize == 0:
-            if self.bytesAvailable() < 2:
+            if self.bytesAvailable() < SIZEOF_UINT16:
                 return
-        
-        message = QString()
-        stream >> message
-        print "---" + str(message) + "---"
+            self.nextBlockSize = stream.readUInt16()
+
+        action = QString()
+        stream >> action
+        uni_action = unicode(action)
+        print "---" + uni_action + "---"
 
 class Ui_DissentWindow(object):
     def setupUi(self, DissentWindow):
-        self.net = net.Net()
-
         self.tcpServer = TcpServer()
         if not self.tcpServer.listen(QHostAddress("127.0.0.1"), 20000):
             print self.tcpServer.errorString()
             return
+
+        self.net = net.Net()
 
         DissentWindow.setObjectName("DissentWindow")
         DissentWindow.resize(835, 576)
@@ -139,7 +144,7 @@ class Ui_DissentWindow(object):
         DissentWindow.setStatusBar(self.statusbar)
 
         self.retranslateUi(DissentWindow)
-        #QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.temp.establish_keys)
+        QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.net.testMessage)
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
         self.display_keys()
 
