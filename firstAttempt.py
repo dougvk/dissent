@@ -49,7 +49,7 @@ class Socket(QTcpSocket):
         uni_action = unicode(action)
 
         # populate up to GUI
-        self.emit(QtCore.SIGNAL("socketReceived(QString)"), QString("<b>Network:</b> " + uni_action))
+        self.emit(QtCore.SIGNAL("socketReceived(QString)"), QString(uni_action))
 
 class Ui_DissentWindow(object):
     def setupUi(self, DissentWindow):
