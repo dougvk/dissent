@@ -11,6 +11,7 @@ from PyQt4.QtNetwork import QTcpServer, QTcpSocket, QHostAddress
 from PyQt4.Qt import QMessageBox, QString
 from PyQt4.QtCore import QDataStream
 import net
+import socket
 
 SIZEOF_UINT16 = 2
 
@@ -77,6 +78,7 @@ class Ui_DissentWindow(object):
         self.verticalLayout_3.addWidget(self.label_3)
         self.nodeList = QtGui.QListWidget(self.horizontalLayoutWidget)
         self.nodeList.setObjectName("nodeList")
+        self.add_nodes()
         self.verticalLayout_3.addWidget(self.nodeList)
         self.bootNodeButton = QtGui.QPushButton(self.horizontalLayoutWidget)
         self.bootNodeButton.setObjectName("bootNodeButton")
@@ -95,9 +97,6 @@ class Ui_DissentWindow(object):
         self.inviteAddress = QtGui.QLineEdit(self.verticalLayoutWidget)
         self.inviteAddress.setObjectName("inviteAddress")
         self.horizontalLayout_6.addWidget(self.inviteAddress)
-        self.inviteKey = QtGui.QLineEdit(self.verticalLayoutWidget)
-        self.inviteKey.setObjectName("inviteKey")
-        self.horizontalLayout_6.addWidget(self.inviteKey)
         self.horizontalLayoutWidget_3 = QtGui.QWidget(self.centralwidget)
         self.horizontalLayoutWidget_3.setGeometry(QtCore.QRect(10, 60, 361, 51))
         self.horizontalLayoutWidget_3.setObjectName("horizontalLayoutWidget_3")
@@ -156,6 +155,7 @@ class Ui_DissentWindow(object):
 
         # make this button temporarily force debug messages for testing
         QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.net.testMessage)
+        QtCore.QObject.connect(self.inviteButton, QtCore.SIGNAL("clicked()"), self.invitePressed)
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
         self.display_keys()
 
@@ -166,7 +166,6 @@ class Ui_DissentWindow(object):
         self.waitButton.setText(QtGui.QApplication.translate("DissentWindow", "Wait", None, QtGui.QApplication.UnicodeUTF8))
         self.inviteButton.setText(QtGui.QApplication.translate("DissentWindow", "Invite", None, QtGui.QApplication.UnicodeUTF8))
         self.inviteAddress.setText(QtGui.QApplication.translate("DissentWindow", "IP:PORT", None, QtGui.QApplication.UnicodeUTF8))
-        self.inviteKey.setText(QtGui.QApplication.translate("DissentWindow", "Public Key", None, QtGui.QApplication.UnicodeUTF8))
         self.label_5.setText(QtGui.QApplication.translate("DissentWindow", "Path to File:", None, QtGui.QApplication.UnicodeUTF8))
         self.filePath.setText(QtGui.QApplication.translate("DissentWindow", "Absolute Path", None, QtGui.QApplication.UnicodeUTF8))
         self.dropOutButton.setText(QtGui.QApplication.translate("DissentWindow", "Drop out of Dissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -182,3 +181,13 @@ class Ui_DissentWindow(object):
     def display_keys(self):
         self.publicKeyField.setPlainText(self.net.public_key_string())
         self.privateKeyField.setPlainText(self.net.private_key_string())
+
+    # add peers from net class to list
+    def add_nodes(self):
+        peers = self.net.nodes
+        for peer in peers:
+            self.nodeList.addItem(QString(socket.gethostbyaddr(peer[0])[0] + ":" + str(peer[1])))
+    
+    def invitePressed(self):
+        peer = str(self.inviteAddress.text())
+        self.net.invite_peer(peer)
