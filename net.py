@@ -7,6 +7,7 @@ import hashlib
 import marshal
 
 from anon_crypto import AnonCrypto
+from anon_net import AnonNet
 import M2Crypto.RSA
 
 from PyQt4.QtCore import *
@@ -121,25 +122,40 @@ class Net:
         debug_file.close()
         return nodes
 
-    """
-    NOTE to have hash consistency:
-    ip must be a string
-    port must be an integer
-    """
+    # returns hash of ip:port peer
     def hash_peer(self, ip, port):
+        port = int(port)
         return hashlib.sha1("%s" % ((ip,port),)).hexdigest()
 
-    # called by GUI right now -- IGNORE
-    def testMessage(self):
-        self.thread.run("testing")
+    # called by GUI when waiting for invite
+    def waitForInvite(self):
+        # receive data
+        sender, cipher = marshal.loads(AnonNet.recv_once(self.ip, self.port))
+        self.DEBUG("Receiving from %s" % sender)
+
+        # parse out sender's ip/port to get corresponding public key
+        ip, port = sender.split(':')
+        hashkey = self.hash_peer(ip, port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+
+        # decrypt with public key and retreive data within
+        dump = AnonCrypto.decrypt_with_public_rsa(pubkey, cipher)
+        (nonce,num_peers,peer_vector) = marshal.loads(dump)
+        self.DEBUG("%s, %s, %s" % (nonce, num_peers, peer_vector))
+
+        #send response
+        self.accept_phase(ip, port, nonce)
 
     """
     handles an invite initiated by GUI. prob needs some more robust
     error handling.
     """
     def invite_peer(self, peer):
+        """ peer is the string passed in from the GUI """
         parts = peer.split(':')
         ip, port = socket.gethostbyname(parts[0]), int(parts[1])
+
+        # if we have the peer's public key, initiate phase, otherwise warn user
         pubkey = self.hash_peer(ip, port)
         if not os.path.isfile("state/%s.pub" % pubkey):
             self.DEBUG("(%s, %i, %s) has no public key reference, yet" % (ip, port, pubkey))
@@ -147,13 +163,52 @@ class Net:
             self.DEBUG("(%s, %i, %s) exists!" % (ip, port, pubkey))
             self.invite_phase(ip, port, pubkey)
 
+    """ Phase 1: Send signed (nonce, N, vector(I)) tuple to invitee """
     def invite_phase(self, ip, port, pubkey):
         nonce = 1
-        N = 1
-        I = [(self.ip,self.port,self.public_key_string)]
-        text = marshal.dumps((nonce,N,I))
+        num_peers = 2
+        peer_vector = [(self.ip,self.port,self.public_key_string())]
+
+        # package the text up into (nonce, N, [array of peer data])
+        text = marshal.dumps((nonce,num_peers,peer_vector))
+
+        # encrypt it
         cipher = AnonCrypto.encrypt_with_private_rsa(self.privKey, text)
-        self.DEBUG(cipher)
+
+        # send to invitee packaged with who it's coming from ((ip:port), signed(text))
+        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("%s:%s" % (self.ip,self.port), cipher)))
+
+        """ wait for response back from invitee -- ((ip:port), signed(text)) """
+        sender, cipher = marshal.loads(AnonNet.recv_once(self.ip, self.port))
+        self.inform_phase(sender, cipher, nonce)
+
+    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
+    def accept_phase(self, ip, port, nonce):
+        # package and encrypt data
+        response = marshal.dumps((nonce,self.ip,self.port))
+        cipher = AnonCrypto.encrypt_with_private_rsa(self.privKey, response)
+
+        # respond with ((ip, port), encrypted_data)
+        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("%s:%s" % (self.ip, self.port), cipher)))
+
+    """ Phase 3: Inform others (after validating response) """
+    def inform_phase(self, sender, cipher, nonce):
+        # parse out senders ip/port
+        self.DEBUG("Receiving from %s" % sender)
+        ip, port = sender.split(':')
+
+        # get corresponding public key
+        hashkey = self.hash_peer(ip, port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+
+        # decrypt and validate!
+        dump = AnonCrypto.decrypt_with_public_rsa(pubkey, cipher)
+        (recv_nonce,new_ip,new_port) = marshal.loads(dump)
+        self.DEBUG("%s, %s, %s" % (recv_nonce, new_ip, new_port))
+        if recv_nonce == nonce:
+            self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
+
+        """ TODO: GOSSIP """
 
     # send debug notifications to GUI
     def DEBUG(self, msg):

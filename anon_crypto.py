@@ -60,29 +60,6 @@ class AnonCrypto:
 		return enc_key + enc_msg
 
 	@staticmethod
-	def encrypt_with_private_rsa(privkey, msg):
-		session_key = M2Crypto.Rand.rand_bytes(32)
-	
-		"""
-		AES must be padded to make 16-byte blocks
-		Since we prepend msg with # of padding bits
-		we actually need one less padding bit
-		"""
-		n_padding = ((16 - (len(msg) % 16)) - 1) % 16
-		padding = '\0' * n_padding
-
-		pad_struct = struct.pack('!B', n_padding)
-
-		encrypt = M2Crypto.EVP.Cipher('aes_256_cbc', 
-				session_key, AnonCrypto.AES_IV, M2Crypto.encrypt)
-
-		""" Output is tuple (E_rsa(session_key), E_aes(session_key, msg)) """
-		enc_key = privkey.private_encrypt(session_key, M2Crypto.RSA.pkcs1_padding)
-		enc_msg = encrypt.update(pad_struct + msg + padding) 
-
-		return enc_key + enc_msg
-
-	@staticmethod
 	def decrypt_with_rsa(privkey, cipherstr):
 		enc_key = cipherstr[:128]	# First 128 bytes are the key
 		enc_msg = cipherstr[128:]	# Rest is the padded AES ciphertext
@@ -108,6 +85,29 @@ class AnonCrypto:
 		outstr = outstr[:(len(outstr) - n_padding)]
 
 		return outstr
+
+	@staticmethod
+	def encrypt_with_private_rsa(privkey, msg):
+		session_key = M2Crypto.Rand.rand_bytes(32)
+	
+		"""
+		AES must be padded to make 16-byte blocks
+		Since we prepend msg with # of padding bits
+		we actually need one less padding bit
+		"""
+		n_padding = ((16 - (len(msg) % 16)) - 1) % 16
+		padding = '\0' * n_padding
+
+		pad_struct = struct.pack('!B', n_padding)
+
+		encrypt = M2Crypto.EVP.Cipher('aes_256_cbc', 
+				session_key, AnonCrypto.AES_IV, M2Crypto.encrypt)
+
+		""" Output is tuple (E_rsa(session_key), E_aes(session_key, msg)) """
+		enc_key = privkey.private_encrypt(session_key, M2Crypto.RSA.pkcs1_padding)
+		enc_msg = encrypt.update(pad_struct + msg + padding) 
+
+		return enc_key + enc_msg
 
 	@staticmethod
 	def decrypt_with_public_rsa(pubkey, cipherstr):
