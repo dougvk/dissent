@@ -129,24 +129,25 @@ class Net:
     # called by GUI when waiting for invite
     def waitForInvite(self):
         # receive data
-        sender, cipher = marshal.loads(AnonNet.recv_once(self.ip, self.port))
-        self.DEBUG("Receiving from %s" % sender)
+        data = AnonNet.recv_once(self.ip, self.port)
+        msg, key = marshal.loads(data)
 
-        # parse out sender's ip/port to get corresponding public key
-        ip, port = sender.split(':')
+        # get (nonce, num_peers, peer_vector from msg) to verify msg
+        (nonce, num_peers, peer_vector) = marshal.loads(msg)
+
+        # parse out sender's ip/port to get saved pubkey, then verify
+        ip, port = peer_vector[0][0], peer_vector[0][1]
         hashkey = self.hash_peer(ip, port)
         pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
 
-        # decrypt with public key and retreive data within
-        dump = AnonCrypto.decrypt_with_public_rsa(pubkey, cipher)
-        (nonce,num_peers,peer_vector) = marshal.loads(dump)
-        self.DEBUG("INVITE: %s, %s, %s" % (nonce, num_peers, peer_vector))
+        self.DEBUG("INVITE: %s, %s, %s, %s" % (nonce, num_peers, peer_vector, verified))
         for peer in peer_vector:
             self.add_peer(peer[0], peer[1])
         self.DEBUG("update peers")
 
         #send response
-        self.accept_phase(ip, port, nonce)
+        if verified: self.accept_phase(ip, port, nonce)
 
     """
     handles an invite initiated by GUI. prob needs some more robust
@@ -172,42 +173,40 @@ class Net:
         peer_vector = [(self.ip,self.port,self.public_key_string())]
 
         # package the text up into (nonce, N, [array of peer data])
-        text = marshal.dumps((nonce,num_peers,peer_vector))
+        invite = marshal.dumps((nonce,num_peers,peer_vector))
 
-        # encrypt it
-        cipher = AnonCrypto.encrypt_with_private_rsa(self.privKey, text)
+        # sign it
+        cipher = AnonCrypto.sign_with_key(self.privKey, invite)
 
         # send to invitee packaged with who it's coming from ((ip:port), signed(text))
-        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("%s:%s" % (self.ip,self.port), cipher)))
+        AnonNet.send_to_addr(ip, int(port), cipher)
 
         """ wait for response back from invitee -- ((ip:port), signed(text)) """
-        sender, cipher = marshal.loads(AnonNet.recv_once(self.ip, self.port))
-        self.inform_phase(sender, cipher, nonce)
+        data = AnonNet.recv_once(self.ip, self.port)
+        self.inform_phase(data)
 
     """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
     def accept_phase(self, ip, port, nonce):
         # package and encrypt data
         response = marshal.dumps((nonce,self.ip,self.port))
-        cipher = AnonCrypto.encrypt_with_private_rsa(self.privKey, response)
+        cipher = AnonCrypto.sign_with_key(self.privKey, response)
 
         # respond with ((ip, port), encrypted_data)
-        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("%s:%s" % (self.ip, self.port), cipher)))
+        AnonNet.send_to_addr(ip, int(port), cipher)
 
     """ Phase 3: Inform others (after validating response) """
-    def inform_phase(self, sender, cipher, nonce):
-        # parse out senders ip/port
-        self.DEBUG("Receiving from %s" % sender)
-        ip, port = sender.split(':')
+    def inform_phase(self, data):
+        msg, key = marshal.loads(data)
 
-        # get corresponding public key
-        hashkey = self.hash_peer(ip, port)
+        # get corresponding public key to verify
+        (recv_nonce, new_ip, new_port) = marshal.loads(msg)
+        hashkey = self.hash_peer(new_ip, new_port)
         pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
 
         # decrypt and validate!
-        dump = AnonCrypto.decrypt_with_public_rsa(pubkey, cipher)
-        (recv_nonce,new_ip,new_port) = marshal.loads(dump)
-        self.DEBUG("INFORMING: %s, %s, %s" % (recv_nonce, new_ip, new_port))
-        if recv_nonce == nonce:
+        self.DEBUG("INFORMING: %s, %s, %s, %s" % (recv_nonce, new_ip, new_port, verified))
+        if verified:
             self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
             self.add_peer(new_ip, new_port)
             self.DEBUG("update peers")

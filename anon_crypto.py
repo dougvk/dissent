@@ -185,8 +185,20 @@ class AnonCrypto:
 		else:
 		 	raise RuntimeError, 'Invalid Signature'
 
+	@staticmethod
+	def verify_with_key(key, msgstr):
+		(msg, sig) = marshal.loads(msgstr)
+		if key.verify(AnonCrypto.hash(msg), sig):
+			return True
+		else:
+		 	return False
 
-
+	@staticmethod
+	def sign_with_key(signkey, msg):
+		return marshal.dumps(
+				(msg,
+				 signkey.sign(
+					 AnonCrypto.hash(msg))))
 
 	"""
 	I/O Utility Functions
