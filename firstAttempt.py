@@ -12,6 +12,7 @@ from PyQt4.Qt import QMessageBox, QString
 from PyQt4.QtCore import QDataStream
 import net
 import socket
+import random
 
 SIZEOF_UINT16 = 2
 
@@ -55,14 +56,15 @@ class Socket(QTcpSocket):
 class Ui_DissentWindow(object):
     def setupUi(self, DissentWindow):
         self.tcpServer = TcpServer()
-        if not self.tcpServer.listen(QHostAddress("127.0.0.1"), 20000):
+        port = int(random.random()*1000 + 20000)
+        if not self.tcpServer.listen(QHostAddress("127.0.0.1"), port):
             print self.tcpServer.errorString()
             return
 
         # register GUI to listen for TCP signals (to display on debug screen)
         QtCore.QObject.connect(self.tcpServer,QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
 
-        self.net = net.Net()
+        self.net = net.Net(port)
 
         DissentWindow.setObjectName("DissentWindow")
         DissentWindow.resize(835, 576)
@@ -175,7 +177,9 @@ class Ui_DissentWindow(object):
 
     # display any messages populated up to GUI
     def displayMessage(self, msg):
-        self.debugField.append(msg)
+        if (msg == "update peers"):
+            self.add_nodes()
+        self.debugField.append("<b>Net</b>: " + msg)
 
     # show keys on screen
     def display_keys(self):
@@ -184,6 +188,8 @@ class Ui_DissentWindow(object):
 
     # add peers from net class to list
     def add_nodes(self):
+        for i in xrange(self.nodeList.count()):
+            self.nodeList.takeItem(i)
         peers = self.net.nodes
         for peer in peers:
             self.nodeList.addItem(QString(socket.gethostbyaddr(peer[0])[0] + ":" + str(peer[1])))

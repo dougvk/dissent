@@ -17,12 +17,11 @@ from PyQt4.QtNetwork import *
 
 SIZEOF_UINT16 = 2
 DEFAULT_PORT = 9000
-GUI_PORT = 20000
 KEY_LENGTH = 1024
 
 class Net:
-    def __init__(self):
-        self.thread = GuiClient()
+    def __init__(self, gui_port):
+        self.thread = GuiClient(gui_port)
         self.nodes = []
         self.privKey = ''
         self.pubKey = ''
@@ -114,7 +113,7 @@ class Net:
             for line in f:
                 parts = line.split()
                 if len(parts) < 2:
-                    raise SyntaxError, "Cannot parse node file"
+                    continue
                 ip, port = socket.gethostbyname(parts[0]), int(parts[1])
                 pubkey = self.hash_peer(ip, port)
                 nodes.append((ip,port,pubkey))
@@ -141,7 +140,10 @@ class Net:
         # decrypt with public key and retreive data within
         dump = AnonCrypto.decrypt_with_public_rsa(pubkey, cipher)
         (nonce,num_peers,peer_vector) = marshal.loads(dump)
-        self.DEBUG("%s, %s, %s" % (nonce, num_peers, peer_vector))
+        self.DEBUG("INVITE: %s, %s, %s" % (nonce, num_peers, peer_vector))
+        for peer in peer_vector:
+            self.add_peer(peer[0], peer[1])
+        self.DEBUG("update peers")
 
         #send response
         self.accept_phase(ip, port, nonce)
@@ -204,15 +206,25 @@ class Net:
         # decrypt and validate!
         dump = AnonCrypto.decrypt_with_public_rsa(pubkey, cipher)
         (recv_nonce,new_ip,new_port) = marshal.loads(dump)
-        self.DEBUG("%s, %s, %s" % (recv_nonce, new_ip, new_port))
+        self.DEBUG("INFORMING: %s, %s, %s" % (recv_nonce, new_ip, new_port))
         if recv_nonce == nonce:
             self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
+            self.add_peer(new_ip, new_port)
+            self.DEBUG("update peers")
 
         """ TODO: GOSSIP """
 
     # send debug notifications to GUI
     def DEBUG(self, msg):
-        self.thread.run("<b>Net</b>: " + msg)
+        self.thread.run(msg)
+
+    def add_peer(self, ip, port):
+        peer_f = open('state/peers.txt','a')
+        debug_f = open('state/debug.txt','a')
+        hashkey = self.hash_peer(ip, port)
+        peer_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], port))
+        debug_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], hashkey))
+        self.nodes.append((ip,int(port),hashkey))
 
     # saves public and private keys to local config directory
     def save_keys(self, rsa_key):
@@ -233,9 +245,10 @@ class Net:
         return AnonCrypto.priv_key_to_str(self.privKey)
 
 class GuiClient(QThread):
-    def __init__(self, parent = None):
+    def __init__(self, gui_port, parent = None):
         super(GuiClient, self).__init__(parent)
         self.socket = QTcpSocket()
+        self.gui_port = gui_port
         self.nextBlockSize = 0
         self.request = None
 
@@ -256,7 +269,7 @@ class GuiClient(QThread):
         stream.writeUInt16(self.request.size() - SIZEOF_UINT16)
         if self.socket.isOpen():
             self.socket.close()
-        self.socket.connectToHost("localhost", GUI_PORT)
+        self.socket.connectToHost("localhost", self.gui_port)
         self.sendRequest()
 
     # send to GUI
