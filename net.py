@@ -5,6 +5,8 @@ import socket
 import sys
 import hashlib
 import marshal
+import SocketServer
+import threading
 
 from anon_crypto import AnonCrypto
 from anon_net import AnonNet
@@ -15,18 +17,15 @@ from PyQt4.QtGui import *
 from PyQt4.QtNetwork import *
 
 
-SIZEOF_UINT16 = 2
-DEFAULT_PORT = 9000
-KEY_LENGTH = 1024
-
-class Net:
-    def __init__(self, gui_port):
-        self.thread = GuiClient(gui_port)
+class Net(QThread):
+    def __init__(self, parent, callback):
+        QThread.__init__(self)
+        self.callback = callback
         self.nodes = []
         self.privKey = ''
         self.pubKey = ''
 
-        # load up your priv/pub keypair
+        #load up your priv/pub keypair
         self.establish_keys()
 
         """
@@ -39,7 +38,14 @@ class Net:
         # get ip and port
         self.ip = self.get_my_ip()
         self.port = self.get_my_port()
+
+        self.server = SimpleServer((self.ip, self.port), self.handler_factory())
+        self.server_thread = threading.Thread(target=self.server.serve_forever)
+        self.server_thread.start()
         self.DEBUG(str(self.ip) + ":" + str(self.port))
+    
+    def run(self):
+        pass
 
     # create/load necessary files to save peer state
     def establish_peers(self):
@@ -128,6 +134,7 @@ class Net:
 
     # called by GUI when waiting for invite
     def waitForInvite(self):
+        self.server.shutdown()
         # receive data
         data = AnonNet.recv_once(self.ip, self.port)
         msg, key = marshal.loads(data)
@@ -211,11 +218,18 @@ class Net:
             self.add_peer(new_ip, new_port)
             self.DEBUG("update peers")
 
-        """ TODO: GOSSIP """
+        """ Broadcast to all peers """
+        voucher = marshal.dumps(self.ip, self.port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port))
+        sig_voucher = AnonCrypto.sign_with_key(self.privKey, voucher)
+        self.broadcast_to_all_peers(sig_voucher)
+
+    def broadcast_to_all_peers(self, voucher):
+        sockets = AnonNet.new_server_socket_set(self.ip, self.port, len(self.nodes))
+        AnonNet.broadcast_using(sockets, AnonNet.send_to_socket, voucher)
 
     # send debug notifications to GUI
     def DEBUG(self, msg):
-        self.thread.run(msg)
+        self.callback(msg)
 
     def add_peer(self, ip, port):
         peer_f = open('state/peers.txt','a')
@@ -242,39 +256,32 @@ class Net:
     # print private key as string
     def private_key_string(self):
         return AnonCrypto.priv_key_to_str(self.privKey)
+        
+    # return peer public key as string
+    def peer_public_key_string(self, ip, port):
+        hashkey = self.hash_peer(ip, port)
+        key = M2Crypto.RSA.load_key('state/%s.pub') % hashkey
+        return AnonCrypto.pub_key_to_str(key)
 
-class GuiClient(QThread):
-    def __init__(self, gui_port, parent = None):
-        super(GuiClient, self).__init__(parent)
-        self.socket = QTcpSocket()
-        self.gui_port = gui_port
-        self.nextBlockSize = 0
-        self.request = None
+    # return a TCPHandler with the GUI callback function
+    def handler_factory(self):
+        def create_handler(*args, **keys):
+            return SingleTCPHandler(self.callback, *args, **keys)
+        return create_handler
 
-    # called by thread
-    def run(self, msg):
-        self.issueRequest(QString(msg))
+class SingleTCPHandler(SocketServer.BaseRequestHandler):
+    """ One instance per connection. """
+    def __init__(self, callback, *args, **keys):
+        self.callback = callback
+        SocketServer.BaseRequestHandler.__init__(self, *args, **keys)
 
-    # package msg into stream, send to GUI
-    def issueRequest(self, msg):
-        self.request = QByteArray()
-        stream = QDataStream(self.request, QIODevice.WriteOnly)
-        stream.setVersion(QDataStream.Qt_4_2)
-        stream.writeUInt16(0)
-        stream << msg
-        stream.device().seek(0)
+    def handle(self):
+        data = AnonNet.recv_from_socket(self.request)
+        self.callback(data)
 
-        # prepend number of bits
-        stream.writeUInt16(self.request.size() - SIZEOF_UINT16)
-        if self.socket.isOpen():
-            self.socket.close()
-        self.socket.connectToHost("localhost", self.gui_port)
-        self.sendRequest()
+class SimpleServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+    daemon_threads = True
+    allow_reuse_address = True
 
-    # send to GUI
-    def sendRequest(self):
-        self.nextBlockSize = 0
-        self.socket.write(self.request)
-        self.socket.waitForBytesWritten(1000)
-        self.request = None
-        self.socket.close()
+    def __init__(self, server_address, RequestHandlerClass):
+        SocketServer.TCPServer.__init__(self, server_address, RequestHandlerClass)

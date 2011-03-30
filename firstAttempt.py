@@ -13,59 +13,10 @@ from PyQt4.QtCore import QDataStream
 import net
 import socket
 import random
-
-SIZEOF_UINT16 = 2
-
-class TcpServer(QTcpServer):
-    def __init__(self):
-        super(TcpServer, self).__init__()
-
-    def incomingConnection(self, socketId):
-        socket = Socket(self)
-        socket.setSocketDescriptor(socketId)
-
-        # create socket, connect signal to signal GUI is listening for
-        self.connect(socket, QtCore.SIGNAL("socketReceived(QString)"), QtCore.SIGNAL("messageReceived(QString)"))
-
-class Socket(QTcpSocket):
-    def __init__(self, parent=None):
-        super(Socket, self).__init__(parent)
-        self.connect(self, QtCore.SIGNAL("readyRead()"), self.readRequest)
-        self.nextBlockSize = 0
-
-    # read data sent over localhost TCP
-    def readRequest(self):
-        stream = QDataStream(self)
-        stream.setVersion(QDataStream.Qt_4_2)
-
-        # make sure enough/all bytes are present
-        if self.nextBlockSize == 0:
-            if self.bytesAvailable() < SIZEOF_UINT16:
-                return
-            self.nextBlockSize = stream.readUInt16()
-        if self.bytesAvailable() < self.nextBlockSize:
-            return
-
-        action = QString()
-        stream >> action
-        uni_action = unicode(action)
-
-        # populate up to GUI
-        self.emit(QtCore.SIGNAL("socketReceived(QString)"), QString(uni_action))
+import sys
 
 class Ui_DissentWindow(object):
     def setupUi(self, DissentWindow):
-        self.tcpServer = TcpServer()
-        port = int(random.random()*1000 + 20000)
-        if not self.tcpServer.listen(QHostAddress("127.0.0.1"), port):
-            print self.tcpServer.errorString()
-            return
-
-        # register GUI to listen for TCP signals (to display on debug screen)
-        QtCore.QObject.connect(self.tcpServer,QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
-
-        self.net = net.Net(port)
-
         DissentWindow.setObjectName("DissentWindow")
         DissentWindow.resize(835, 576)
         self.centralwidget = QtGui.QWidget(DissentWindow)
@@ -80,7 +31,6 @@ class Ui_DissentWindow(object):
         self.verticalLayout_3.addWidget(self.label_3)
         self.nodeList = QtGui.QListWidget(self.horizontalLayoutWidget)
         self.nodeList.setObjectName("nodeList")
-        self.add_nodes()
         self.verticalLayout_3.addWidget(self.nodeList)
         self.bootNodeButton = QtGui.QPushButton(self.horizontalLayoutWidget)
         self.bootNodeButton.setObjectName("bootNodeButton")
@@ -155,11 +105,15 @@ class Ui_DissentWindow(object):
 
         self.retranslateUi(DissentWindow)
 
+        self.net = net.Net(self,self.displayMessage)
+        self.net.start()
+
         # make this button temporarily force debug messages for testing
         QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.net.waitForInvite)
         QtCore.QObject.connect(self.inviteButton, QtCore.SIGNAL("clicked()"), self.invitePressed)
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
         self.display_keys()
+        self.add_nodes()
 
     def retranslateUi(self, DissentWindow):
         DissentWindow.setWindowTitle(QtGui.QApplication.translate("DissentWindow", "µDissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -197,3 +151,20 @@ class Ui_DissentWindow(object):
     def invitePressed(self):
         peer = str(self.inviteAddress.text())
         self.net.invite_peer(peer)
+
+class Main(QtGui.QMainWindow):
+    def __init__(self):
+        QtGui.QMainWindow.__init__(self)
+
+        self.ui=Ui_DissentWindow()
+        self.ui.setupUi(self)
+
+def main():
+    app=QtGui.QApplication(sys.argv)
+    window=Main()
+    window.show()
+    app.connect(app, QtCore.SIGNAL("lastWindowClosed()"), app, QtCore.SLOT("quit()"))
+    sys.exit(app.exec_())
+
+if __name__ == "__main__":
+    main()
