@@ -142,8 +142,7 @@ class Ui_DissentWindow(object):
 
     # add peers from net class to list
     def add_nodes(self):
-        for i in xrange(self.nodeList.count()):
-            self.nodeList.takeItem(i)
+        self.nodeList.clear()
         peers = self.net.nodes
         for peer in peers:
             self.nodeList.addItem(QString(socket.gethostbyaddr(peer[0])[0] + ":" + str(peer[1])))

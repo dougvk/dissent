@@ -19,6 +19,8 @@ from PyQt4.QtCore import *
 from PyQt4.QtGui import *
 from PyQt4.QtNetwork import *
 
+KEY_LENGTH = 1024
+DEFAULT_PORT = 9000
 
 class Net(QThread):
     def __init__(self, parent):
@@ -40,6 +42,7 @@ class Net(QThread):
         # get ip and port
         self.ip = self.get_my_ip()
         self.port = self.get_my_port()
+        self.hashkey = self.hash_peer(self.ip, self.port)
 
         self.server = SimpleServer((self.ip, self.port), self.handler_factory())
         self.server_thread = threading.Thread(target=self.server.serve_forever)
@@ -63,8 +66,7 @@ class Net(QThread):
         verified = AnonCrypto.verify_with_key(pubkey, data)
 
         self.DEBUG("INVITE: %s, %s, %s, %s" % (nonce, num_peers, peer_vector, verified))
-        for peer in peer_vector:
-            self.add_peer(peer[0], peer[1])
+        self.save_peer_list(peer_vector)
 
         """ NOTE: should probably emit a signal to update peers """
         self.DEBUG("update peers")
@@ -101,8 +103,12 @@ class Net(QThread):
     """ Phase 1: Send signed (nonce, N, vector(I)) tuple to invitee """
     def invite_phase(self, ip, port, pubkey):
         nonce = 1
-        num_peers = 2
+        num_peers = len(self.nodes) + 1
         peer_vector = [(self.ip,self.port,self.public_key_string())]
+        for node in self.nodes:
+            hashkey = self.hash_peer(node[0], node[1])
+            if hashkey != self.hashkey:
+                peer_vector.append(node)
 
         # package the text up into (nonce, N, [array of peer data])
         invite = marshal.dumps((nonce,num_peers,peer_vector))
@@ -128,6 +134,8 @@ class Net(QThread):
         if verified:
             self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
             self.add_peer(new_ip, new_port)
+
+            """ NOTE: should probably emit a signal to update peers """
             self.DEBUG("update peers")
 
         """ Broadcast to all peers """
@@ -150,12 +158,23 @@ class Net(QThread):
             self.DEBUG("SUCCESSFULLY VOUCHED")
             self.save_voucher(new_ip, new_port, data)
             self.save_peer_key(new_ip, new_port, pub_key_string)
+            self.add_peer(new_ip, new_port)
+
+            """ NOTE: should probably emit a signal to update peers """
+            self.DEBUG("update peers")
 
     def save_voucher(self, ip, port, voucher):
         hashkey = self.hash_peer(ip, port)
         f = open("state/%s.voucher" % hashkey, 'w')
         f.write(voucher)
         f.close()
+
+    def save_peer_list(self, peer_vector):
+        for peer in peer_vector:
+            hashkey = self.hash_peer(peer[0], peer[1])
+            if hashkey != self.hashkey:
+                Utilities.write_str_to_file("state/%s.pub" % hashkey, peer[2])
+                self.add_peer(peer[0], peer[1])
 
     def save_peer_key(self, ip, port, pub_key_string):
         hashkey = self.hash_peer(ip, port)
@@ -240,9 +259,8 @@ class Net(QThread):
                 if len(parts) < 2:
                     continue
                 ip, port = socket.gethostbyname(parts[0]), int(parts[1])
-                pubkey = self.hash_peer(ip, port)
-                nodes.append((ip,port,pubkey))
-                debug_file.write(parts[0] + " " + pubkey + "\n")
+                nodes.append((ip,port,self.peer_public_key_string(ip,port)))
+                debug_file.write(parts[0] + " " + self.hash_peer(ip,port) + "\n")
         debug_file.close()
         return nodes
 
@@ -256,12 +274,13 @@ class Net(QThread):
         self.emit(SIGNAL("messageReceived(QString)"), QString(msg))
 
     def add_peer(self, ip, port):
-        peer_f = open('state/peers.txt','a')
-        debug_f = open('state/debug.txt','a')
         hashkey = self.hash_peer(ip, port)
-        peer_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], port))
-        debug_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], hashkey))
-        self.nodes.append((ip,int(port),hashkey))
+        if hashkey != self.hashkey:
+            peer_f = open('state/peers.txt','a')
+            debug_f = open('state/debug.txt','a')
+            peer_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], port))
+            debug_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], hashkey))
+            self.nodes.append((ip,int(port),self.peer_public_key_string(ip,port)))
 
     # saves public and private keys to local config directory
     def save_keys(self, rsa_key):
