@@ -105,7 +105,7 @@ class Ui_DissentWindow(object):
 
         self.retranslateUi(DissentWindow)
 
-        self.net = net.Net(self,self.displayMessage)
+        self.net = net.Net(self)
         self.net.start()
 
         # make this button temporarily force debug messages for testing
@@ -114,6 +114,7 @@ class Ui_DissentWindow(object):
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
         self.display_keys()
         self.add_nodes()
+        QtCore.QObject.connect(self.net, QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
 
     def retranslateUi(self, DissentWindow):
         DissentWindow.setWindowTitle(QtGui.QApplication.translate("DissentWindow", "µDissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -163,7 +164,9 @@ def main():
     app=QtGui.QApplication(sys.argv)
     window=Main()
     window.show()
-    app.connect(app, QtCore.SIGNAL("lastWindowClosed()"), app, QtCore.SLOT("quit()"))
+    
+    # shutdown the server upon exit
+    app.connect(app, QtCore.SIGNAL("lastWindowClosed()"), window.ui.net.server.shutdown)
     sys.exit(app.exec_())
 
 if __name__ == "__main__":

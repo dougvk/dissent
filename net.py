@@ -18,9 +18,8 @@ from PyQt4.QtNetwork import *
 
 
 class Net(QThread):
-    def __init__(self, parent, callback):
+    def __init__(self, parent):
         QThread.__init__(self)
-        self.callback = callback
         self.nodes = []
         self.privKey = ''
         self.pubKey = ''
@@ -229,7 +228,7 @@ class Net(QThread):
 
     # send debug notifications to GUI
     def DEBUG(self, msg):
-        self.callback(msg)
+        self.emit(SIGNAL("messageReceived(QString)"), QString(msg))
 
     def add_peer(self, ip, port):
         peer_f = open('state/peers.txt','a')
@@ -266,18 +265,18 @@ class Net(QThread):
     # return a TCPHandler with the GUI callback function
     def handler_factory(self):
         def create_handler(*args, **keys):
-            return SingleTCPHandler(self.callback, *args, **keys)
+            return SingleTCPHandler(self, *args, **keys)
         return create_handler
 
 class SingleTCPHandler(SocketServer.BaseRequestHandler):
     """ One instance per connection. """
-    def __init__(self, callback, *args, **keys):
-        self.callback = callback
+    def __init__(self, parent, *args, **keys):
+        self.parent = parent
         SocketServer.BaseRequestHandler.__init__(self, *args, **keys)
 
     def handle(self):
         data = AnonNet.recv_from_socket(self.request)
-        self.callback(data)
+        self.parent.emit(SIGNAL("messageReceived(QString)"), QString(str(data)))
 
 class SimpleServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
     daemon_threads = True
