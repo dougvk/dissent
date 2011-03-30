@@ -1,4 +1,5 @@
 from __future__ import with_statement
+
 import os.path
 import random
 import socket
@@ -10,6 +11,8 @@ import threading
 
 from anon_crypto import AnonCrypto
 from anon_net import AnonNet
+from utils import Utilities
+
 import M2Crypto.RSA
 
 from PyQt4.QtCore import *
@@ -45,6 +48,123 @@ class Net(QThread):
     
     def run(self):
         pass
+
+    def recv_invite(self, data):
+        # receive data
+        msg, key = marshal.loads(data)
+
+        # get (nonce, num_peers, peer_vector from msg) to verify msg
+        (nonce, num_peers, peer_vector) = marshal.loads(msg)
+
+        # parse out sender's ip/port to get saved pubkey, then verify
+        ip, port = peer_vector[0][0], peer_vector[0][1]
+        hashkey = self.hash_peer(ip, port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        self.DEBUG("INVITE: %s, %s, %s, %s" % (nonce, num_peers, peer_vector, verified))
+        for peer in peer_vector:
+            self.add_peer(peer[0], peer[1])
+
+        """ NOTE: should probably emit a signal to update peers """
+        self.DEBUG("update peers")
+
+        #send response
+        if verified: self.accept_phase(ip, port, nonce)
+
+    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
+    def accept_phase(self, ip, port, nonce):
+        # package and encrypt data
+        response = marshal.dumps((nonce,self.ip,self.port))
+        cipher = AnonCrypto.sign_with_key(self.privKey, response)
+
+        # respond with ((ip, port), encrypted_data)
+        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("accept", cipher)))
+
+    """
+    handles an invite initiated by GUI. prob needs some more robust
+    error handling.
+    """
+    def invite_peer(self, peer):
+        """ peer is the string passed in from the GUI """
+        parts = peer.split(':')
+        ip, port = socket.gethostbyname(parts[0]), int(parts[1])
+
+        # if we have the peer's public key, initiate phase, otherwise warn user
+        pubkey = self.hash_peer(ip, port)
+        if not os.path.isfile("state/%s.pub" % pubkey):
+            self.DEBUG("(%s, %i, %s) has no public key reference, yet" % (ip, port, pubkey))
+        else:
+            self.DEBUG("(%s, %i, %s) exists!" % (ip, port, pubkey))
+            self.invite_phase(ip, port, pubkey)
+
+    """ Phase 1: Send signed (nonce, N, vector(I)) tuple to invitee """
+    def invite_phase(self, ip, port, pubkey):
+        nonce = 1
+        num_peers = 2
+        peer_vector = [(self.ip,self.port,self.public_key_string())]
+
+        # package the text up into (nonce, N, [array of peer data])
+        invite = marshal.dumps((nonce,num_peers,peer_vector))
+
+        # sign it
+        cipher = AnonCrypto.sign_with_key(self.privKey, invite)
+
+        # send to invitee packaged with who it's coming from ((ip:port), signed(text))
+        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("invite", cipher)))
+
+    """ Phase 3: Inform others (after validating response) """
+    def inform_phase(self, data):
+        msg, key = marshal.loads(data)
+
+        # get corresponding public key to verify
+        (recv_nonce, new_ip, new_port) = marshal.loads(msg)
+        hashkey = self.hash_peer(new_ip, new_port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        # decrypt and validate!
+        self.DEBUG("INFORMING: %s, %s, %s, %s" % (recv_nonce, new_ip, new_port, verified))
+        if verified:
+            self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
+            self.add_peer(new_ip, new_port)
+            self.DEBUG("update peers")
+
+        """ Broadcast to all peers """
+        voucher = marshal.dumps((self.ip, self.port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port)))
+        sig_voucher = AnonCrypto.sign_with_key(self.privKey, voucher)
+        self.save_voucher(new_ip, new_port, sig_voucher)
+        self.broadcast_to_all_peers(marshal.dumps(("inform", sig_voucher)))
+
+    def recv_voucher(self, data):
+        msg, key = marshal.loads(data)
+
+        # get corresponding public key to verify
+        (vouch_ip, vouch_port, new_ip, new_port, pub_key_string) = marshal.loads(msg)
+        hashkey = self.hash_peer(vouch_ip, vouch_port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        self.DEBUG("VOUCHER: %s, %s, %s, %s, %s" % (vouch_ip, vouch_port, new_ip, new_port, pub_key_string))
+        if verified:
+            self.DEBUG("SUCCESSFULLY VOUCHED")
+            self.save_voucher(new_ip, new_port, data)
+            self.save_peer_key(new_ip, new_port, pub_key_string)
+
+    def save_voucher(self, ip, port, voucher):
+        hashkey = self.hash_peer(ip, port)
+        f = open("state/%s.voucher" % hashkey, 'w')
+        f.write(voucher)
+        f.close()
+
+    def save_peer_key(self, ip, port, pub_key_string):
+        hashkey = self.hash_peer(ip, port)
+        Utilities.write_str_to_file("state/%s.pub" % hashkey, pub_key_string)
+
+    def broadcast_to_all_peers(self, voucher):
+        for node in self.nodes:
+            ip, port = node[0], node[1]
+            AnonNet.send_to_addr(ip, port, voucher)
 
     # create/load necessary files to save peer state
     def establish_peers(self):
@@ -131,101 +251,6 @@ class Net(QThread):
         port = int(port)
         return hashlib.sha1("%s" % ((ip,port),)).hexdigest()
 
-    # called by GUI when waiting for invite
-    def waitForInvite(self):
-        self.server.shutdown()
-        # receive data
-        data = AnonNet.recv_once(self.ip, self.port)
-        msg, key = marshal.loads(data)
-
-        # get (nonce, num_peers, peer_vector from msg) to verify msg
-        (nonce, num_peers, peer_vector) = marshal.loads(msg)
-
-        # parse out sender's ip/port to get saved pubkey, then verify
-        ip, port = peer_vector[0][0], peer_vector[0][1]
-        hashkey = self.hash_peer(ip, port)
-        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
-        verified = AnonCrypto.verify_with_key(pubkey, data)
-
-        self.DEBUG("INVITE: %s, %s, %s, %s" % (nonce, num_peers, peer_vector, verified))
-        for peer in peer_vector:
-            self.add_peer(peer[0], peer[1])
-        self.DEBUG("update peers")
-
-        #send response
-        if verified: self.accept_phase(ip, port, nonce)
-
-    """
-    handles an invite initiated by GUI. prob needs some more robust
-    error handling.
-    """
-    def invite_peer(self, peer):
-        """ peer is the string passed in from the GUI """
-        parts = peer.split(':')
-        ip, port = socket.gethostbyname(parts[0]), int(parts[1])
-
-        # if we have the peer's public key, initiate phase, otherwise warn user
-        pubkey = self.hash_peer(ip, port)
-        if not os.path.isfile("state/%s.pub" % pubkey):
-            self.DEBUG("(%s, %i, %s) has no public key reference, yet" % (ip, port, pubkey))
-        else:
-            self.DEBUG("(%s, %i, %s) exists!" % (ip, port, pubkey))
-            self.invite_phase(ip, port, pubkey)
-
-    """ Phase 1: Send signed (nonce, N, vector(I)) tuple to invitee """
-    def invite_phase(self, ip, port, pubkey):
-        nonce = 1
-        num_peers = 2
-        peer_vector = [(self.ip,self.port,self.public_key_string())]
-
-        # package the text up into (nonce, N, [array of peer data])
-        invite = marshal.dumps((nonce,num_peers,peer_vector))
-
-        # sign it
-        cipher = AnonCrypto.sign_with_key(self.privKey, invite)
-
-        # send to invitee packaged with who it's coming from ((ip:port), signed(text))
-        AnonNet.send_to_addr(ip, int(port), cipher)
-
-        """ wait for response back from invitee -- ((ip:port), signed(text)) """
-        data = AnonNet.recv_once(self.ip, self.port)
-        self.inform_phase(data)
-
-    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
-    def accept_phase(self, ip, port, nonce):
-        # package and encrypt data
-        response = marshal.dumps((nonce,self.ip,self.port))
-        cipher = AnonCrypto.sign_with_key(self.privKey, response)
-
-        # respond with ((ip, port), encrypted_data)
-        AnonNet.send_to_addr(ip, int(port), cipher)
-
-    """ Phase 3: Inform others (after validating response) """
-    def inform_phase(self, data):
-        msg, key = marshal.loads(data)
-
-        # get corresponding public key to verify
-        (recv_nonce, new_ip, new_port) = marshal.loads(msg)
-        hashkey = self.hash_peer(new_ip, new_port)
-        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
-        verified = AnonCrypto.verify_with_key(pubkey, data)
-
-        # decrypt and validate!
-        self.DEBUG("INFORMING: %s, %s, %s, %s" % (recv_nonce, new_ip, new_port, verified))
-        if verified:
-            self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
-            self.add_peer(new_ip, new_port)
-            self.DEBUG("update peers")
-
-        """ Broadcast to all peers """
-        voucher = marshal.dumps(self.ip, self.port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port))
-        sig_voucher = AnonCrypto.sign_with_key(self.privKey, voucher)
-        self.broadcast_to_all_peers(sig_voucher)
-
-    def broadcast_to_all_peers(self, voucher):
-        sockets = AnonNet.new_server_socket_set(self.ip, self.port, len(self.nodes))
-        AnonNet.broadcast_using(sockets, AnonNet.send_to_socket, voucher)
-
     # send debug notifications to GUI
     def DEBUG(self, msg):
         self.emit(SIGNAL("messageReceived(QString)"), QString(msg))
@@ -259,7 +284,7 @@ class Net(QThread):
     # return peer public key as string
     def peer_public_key_string(self, ip, port):
         hashkey = self.hash_peer(ip, port)
-        key = M2Crypto.RSA.load_key('state/%s.pub') % hashkey
+        key = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
         return AnonCrypto.pub_key_to_str(key)
 
     # return a TCPHandler with the GUI callback function
@@ -276,7 +301,15 @@ class SingleTCPHandler(SocketServer.BaseRequestHandler):
 
     def handle(self):
         data = AnonNet.recv_from_socket(self.request)
-        self.parent.emit(SIGNAL("messageReceived(QString)"), QString(str(data)))
+        (function, msg) = marshal.loads(data)
+        if function == "invite":
+            self.parent.recv_invite(msg)
+        elif function == "accept":
+            self.parent.inform_phase(msg)
+        elif function == "inform":
+            self.parent.recv_voucher(msg)
+        else:
+            self.parent.emit(SIGNAL("messageReceived(QString)"), QString("not sure what to do with: " + str(function)))
 
 class SimpleServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
     daemon_threads = True

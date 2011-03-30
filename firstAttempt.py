@@ -109,7 +109,6 @@ class Ui_DissentWindow(object):
         self.net.start()
 
         # make this button temporarily force debug messages for testing
-        QtCore.QObject.connect(self.waitButton, QtCore.SIGNAL("clicked()"), self.net.waitForInvite)
         QtCore.QObject.connect(self.inviteButton, QtCore.SIGNAL("clicked()"), self.invitePressed)
         QtCore.QMetaObject.connectSlotsByName(DissentWindow)
         self.display_keys()
