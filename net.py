@@ -102,6 +102,7 @@ class Net(QThread):
 
     """ Phase 1: Send signed (nonce, N, vector(I)) tuple to invitee """
     def invite_phase(self, ip, port, pubkey):
+        """ Create {nonce, # peers, vector containing (ip, port, pubkey) of all peers """
         nonce = 1
         num_peers = len(self.nodes) + 1
         peer_vector = [(self.ip,self.port,self.public_key_string())]
@@ -138,12 +139,13 @@ class Net(QThread):
             """ NOTE: should probably emit a signal to update peers """
             self.DEBUG("update peers")
 
-        """ Broadcast to all peers """
+        """ Broadcast to all peers, save voucher """
         voucher = marshal.dumps((self.ip, self.port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port)))
         sig_voucher = AnonCrypto.sign_with_key(self.privKey, voucher)
         self.save_voucher(new_ip, new_port, sig_voucher)
         self.broadcast_to_all_peers(marshal.dumps(("inform", sig_voucher)))
 
+    """ Phase 4: Someone just invited an vouched for a new peer """
     def recv_voucher(self, data):
         msg, key = marshal.loads(data)
 
@@ -273,6 +275,7 @@ class Net(QThread):
     def DEBUG(self, msg):
         self.emit(SIGNAL("messageReceived(QString)"), QString(msg))
 
+    # add peer to self.nodes -- make sure its not you!
     def add_peer(self, ip, port):
         hashkey = self.hash_peer(ip, port)
         if hashkey != self.hashkey:
@@ -296,17 +299,13 @@ class Net(QThread):
     def public_key_string(self):
         return AnonCrypto.pub_key_to_str(self.pubKey)
 
-    # print private key as string
-    def private_key_string(self):
-        return AnonCrypto.priv_key_to_str(self.privKey)
-        
     # return peer public key as string
     def peer_public_key_string(self, ip, port):
         hashkey = self.hash_peer(ip, port)
         key = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
         return AnonCrypto.pub_key_to_str(key)
 
-    # return a TCPHandler with the GUI callback function
+    """ factory to return TCPHandler with a reference to Net, so it can emit a signal to GUI """
     def handler_factory(self):
         def create_handler(*args, **keys):
             return SingleTCPHandler(self, *args, **keys)
@@ -318,6 +317,7 @@ class SingleTCPHandler(SocketServer.BaseRequestHandler):
         self.parent = parent
         SocketServer.BaseRequestHandler.__init__(self, *args, **keys)
 
+    """ send data to correct function in Net class """
     def handle(self):
         data = AnonNet.recv_from_socket(self.request)
         (function, msg) = marshal.loads(data)
