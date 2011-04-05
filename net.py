@@ -44,14 +44,117 @@ class Net(QThread):
         self.port = self.get_my_port()
         self.hashkey = self.hash_peer(self.ip, self.port)
 
-        self.server = SimpleServer((self.ip, self.port), self.handler_factory())
+        # created threaded server
+        self.server = ThreadedServer((self.ip, self.port), self.handler_factory())
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.start()
         self.DEBUG(str(self.ip) + ":" + str(self.port))
     
+    # need to implement this because Net subclasses QThread
     def run(self):
         pass
 
+    """ GUI initiated user expellation """
+    def expel_peer(self, ip, port):
+        self.DEBUG("IP/PORT to expel: %s:%s" % (ip, port))
+
+        # create voucher for peers to save
+        expel_voucher = marshal.dumps((self.ip, self.port, ip, port, self.peer_public_key_string(ip,port)))
+        cipher = AnonCrypto.sign_with_key(self.privKey, expel_voucher)
+        self.broadcast_to_all_peers(marshal.dumps(("expel",cipher)))
+
+        # remove from peerlist
+        index = self.nodes.index((ip, int(port), self.peer_public_key_string(ip,port)))
+        self.nodes.pop(index)
+        self.update_peerlist()
+        self.DEBUG("Expelled!")
+
+        # save the voucher you sent out
+        self.save_voucher(self.ip,self.port,cipher,"expelvoucher")
+    
+    """ delete expelled peer from list given a proper voucher. save the voucher """
+    def recv_expel_voucher(self, data):
+        msg, key = marshal.loads(data)
+        (vouch_ip, vouch_port, expel_ip, expel_port, expel_pubkey) = marshal.loads(msg)
+        self.DEBUG("Recieved a expel voucher from %s:%s against %s:%s" % (vouch_ip, vouch_port, expel_ip, expel_port))
+
+        # verify the expel voucher
+        hashkey = self.hash_peer(vouch_ip, vouch_port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        # if verified, remove and save voucher
+        if verified:
+            try:
+                index = self.nodes.index((expel_ip, int(expel_port), expel_pubkey))
+                self.nodes.pop(index)
+                self.DEBUG("Expelled!")
+                self.update_peerlist()
+            except:
+                if self.ip == expel_ip and int(self.port) == int(expel_port):
+                    self.nodes = []
+                    self.update_peerlist()
+                    self.DEBUG("I'm being booted :(")
+                else:
+                    self.DEBUG("Booting someone I don't know")
+            self.save_voucher(vouch_ip,vouch_port,data,"expelvoucher")
+        else:
+            self.DEBUG("Not a valid voucher -- not expelling")
+
+    """ GUI initiated clique dropout """
+    def drop_out(self):
+        self.DEBUG("Dropping out of the clique")
+
+        # create dropout voucher (IP, PORT, PUBKEY)
+        dropout_voucher = marshal.dumps((self.ip, self.port, self.public_key_string()))
+
+        # sign it
+        cipher = AnonCrypto.sign_with_key(self.privKey, dropout_voucher)
+
+        # give all peers signed voucher of your voluntary quitting
+        self.broadcast_to_all_peers(marshal.dumps(("quit", cipher)))
+
+        # empty peerlist and exit
+        self.nodes = []
+        self.update_peerlist()
+
+    """ Delete verified peer from list given a proper voucher. Save the voucher. """
+    def recv_quit_voucher(self, data):
+        msg, key = marshal.loads(data)
+        (ip, port, pubkey_string) = marshal.loads(msg)
+        self.DEBUG("Recieved a dropout voucher from %s:%s" % (ip, port))
+
+        # verify quit voucher
+        hashkey = self.hash_peer(ip, port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+        
+        # try to remove if verified, then save voucher
+        if verified:
+            try:
+                index = self.nodes.index((ip, int(port), pubkey_string))
+                self.nodes.pop(index)
+                self.DEBUG("Verified Peer %s:%s is dropping out! Index: %s" % (ip, port, index))
+                self.update_peerlist()
+            except:
+                self.DEBUG("Verified Peer %s:%s is not on your list!" % (ip, port))
+            self.save_voucher(ip,port,data,"dropoutvoucher")
+        else:
+            self.DEBUG("Peer %s:%s not verified" % (ip, port))
+
+    """
+    GUI initiated invite
+    """
+    def invite_peer(self, ip, port):
+        # if we have the peer's public key, initiate phase, otherwise warn user
+        pubkey = self.hash_peer(ip, port)
+        if not os.path.isfile("state/%s.pub" % pubkey):
+            self.DEBUG("(%s, %i, %s) has no public key reference, yet" % (ip, port, pubkey))
+        else:
+            self.DEBUG("(%s, %i, %s) exists!" % (ip, port, pubkey))
+            self.invite_phase(ip, port, pubkey)
+
+    """ Phase 0: receive an invite from a peer """
     def recv_invite(self, data):
         # receive data
         msg, key = marshal.loads(data)
@@ -65,44 +168,22 @@ class Net(QThread):
         pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
         verified = AnonCrypto.verify_with_key(pubkey, data)
 
-        self.DEBUG("INVITE: %s, %s, %s, %s" % (nonce, num_peers, peer_vector, verified))
-        self.save_peer_list(peer_vector)
+        if verified:
+            # save the list of peers sent to you if verified
+            self.DEBUG("verified invite contents: %s, %s, %s, %s" % (nonce, num_peers, peer_vector, verified))
+            self.save_peer_list(peer_vector)
 
-        """ NOTE: should probably emit a signal to update peers """
-        self.DEBUG("update peers")
+            # update GUI list
+            self.update_peerlist()
 
-        #send response
-        if verified: self.accept_phase(ip, port, nonce)
-
-    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
-    def accept_phase(self, ip, port, nonce):
-        # package and encrypt data
-        response = marshal.dumps((nonce,self.ip,self.port))
-        cipher = AnonCrypto.sign_with_key(self.privKey, response)
-
-        # respond with ((ip, port), encrypted_data)
-        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("accept", cipher)))
-
-    """
-    handles an invite initiated by GUI. prob needs some more robust
-    error handling.
-    """
-    def invite_peer(self, peer):
-        """ peer is the string passed in from the GUI """
-        parts = peer.split(':')
-        ip, port = socket.gethostbyname(parts[0]), int(parts[1])
-
-        # if we have the peer's public key, initiate phase, otherwise warn user
-        pubkey = self.hash_peer(ip, port)
-        if not os.path.isfile("state/%s.pub" % pubkey):
-            self.DEBUG("(%s, %i, %s) has no public key reference, yet" % (ip, port, pubkey))
+            #send response
+            self.accept_phase(ip, port, nonce)
         else:
-            self.DEBUG("(%s, %i, %s) exists!" % (ip, port, pubkey))
-            self.invite_phase(ip, port, pubkey)
+            self.DEBUG("received invite not verifiable!")
 
     """ Phase 1: Send signed (nonce, N, vector(I)) tuple to invitee """
     def invite_phase(self, ip, port, pubkey):
-        """ Create {nonce, # peers, vector containing (ip, port, pubkey) of all peers """
+        # create nonce, # peers, vector containing (ip, port, pubkey) of all peers
         nonce = 1
         num_peers = len(self.nodes) + 1
         peer_vector = [(self.ip,self.port,self.public_key_string())]
@@ -120,6 +201,24 @@ class Net(QThread):
         # send to invitee packaged with who it's coming from ((ip:port), signed(text))
         AnonNet.send_to_addr(ip, int(port), marshal.dumps(("invite", cipher)))
 
+    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
+    def accept_phase(self, ip, port, nonce):
+        # package and encrypt data
+        response = marshal.dumps((nonce,self.ip,self.port))
+        cipher = AnonCrypto.sign_with_key(self.privKey, response)
+
+        # respond with ((ip, port), encrypted_data)
+        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("accept", cipher)))
+
+    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
+    def accept_phase(self, ip, port, nonce):
+        # package and encrypt data
+        response = marshal.dumps((nonce,self.ip,self.port))
+        cipher = AnonCrypto.sign_with_key(self.privKey, response)
+
+        # respond with ((ip, port), encrypted_data)
+        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("accept", cipher)))
+
     """ Phase 3: Inform others (after validating response) """
     def inform_phase(self, data):
         msg, key = marshal.loads(data)
@@ -136,16 +235,15 @@ class Net(QThread):
             self.DEBUG("SUCCESSFULLY INVITED/VALIDATED!")
             self.add_peer(new_ip, new_port)
 
-            """ NOTE: should probably emit a signal to update peers """
-            self.DEBUG("update peers")
+            self.update_peerlist()
 
-        """ Broadcast to all peers, save voucher """
+        # broadcast to all peers, save voucher
         voucher = marshal.dumps((self.ip, self.port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port)))
         sig_voucher = AnonCrypto.sign_with_key(self.privKey, voucher)
-        self.save_voucher(new_ip, new_port, sig_voucher)
+        self.save_voucher(new_ip, new_port, sig_voucher, "voucher")
         self.broadcast_to_all_peers(marshal.dumps(("inform", sig_voucher)))
 
-    """ Phase 4: Someone just invited an vouched for a new peer """
+    """ Phase 4: Someone just invited and vouched for a new peer """
     def recv_voucher(self, data):
         msg, key = marshal.loads(data)
 
@@ -155,22 +253,27 @@ class Net(QThread):
         pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
         verified = AnonCrypto.verify_with_key(pubkey, data)
 
-        self.DEBUG("VOUCHER: %s, %s, %s, %s, %s" % (vouch_ip, vouch_port, new_ip, new_port, pub_key_string))
+        self.DEBUG("Received voucher from %s:%s for %s:%s" % (vouch_ip, vouch_port, new_ip, new_port))
+
+        # save voucher and add peer to nodelist if vouched properly
         if verified:
             self.DEBUG("SUCCESSFULLY VOUCHED")
-            self.save_voucher(new_ip, new_port, data)
+            self.save_voucher(new_ip, new_port, data, "voucher")
             self.save_peer_key(new_ip, new_port, pub_key_string)
             self.add_peer(new_ip, new_port)
 
-            """ NOTE: should probably emit a signal to update peers """
-            self.DEBUG("update peers")
+            self.update_peerlist()
+        else:
+            self.DEBUG("voucher not verified, no action taken")
 
-    def save_voucher(self, ip, port, voucher):
+    # save a voucher received over the network
+    def save_voucher(self, ip, port, voucher, voucher_type):
         hashkey = self.hash_peer(ip, port)
-        f = open("state/%s.voucher" % hashkey, 'w')
+        f = open("state/%s.%s" % (hashkey, voucher_type), 'w')
         f.write(voucher)
         f.close()
 
+    # save the peer list sent during invite phase
     def save_peer_list(self, peer_vector):
         for peer in peer_vector:
             hashkey = self.hash_peer(peer[0], peer[1])
@@ -178,10 +281,12 @@ class Net(QThread):
                 Utilities.write_str_to_file("state/%s.pub" % hashkey, peer[2])
                 self.add_peer(peer[0], peer[1])
 
+    # save a peers pubkey string sent over network
     def save_peer_key(self, ip, port, pub_key_string):
         hashkey = self.hash_peer(ip, port)
         Utilities.write_str_to_file("state/%s.pub" % hashkey, pub_key_string)
 
+    # broadcast message to everyone in peer list
     def broadcast_to_all_peers(self, voucher):
         for node in self.nodes:
             ip, port = node[0], node[1]
@@ -196,17 +301,12 @@ class Net(QThread):
             self.DEBUG(str(self.nodes))
             return
 
-        """
-        otherwise, create peers file for later
-        debug.txt contains (peername, hashstring) to
-        make debugging easier
-        """
+        # otherwise, create peers file for later
         if not os.path.exists('state'):
             os.mkdir('state')
         if not os.path.isfile('state/peers.txt'):
             self.DEBUG("creating peers.txt")
             open('state/peers.txt','w').close()
-            open('state/debug.txt','w').close()
 
     # load / create your pub and priv keys in the config folder	
     def establish_keys(self):
@@ -227,6 +327,7 @@ class Net(QThread):
     def get_my_ip(self):
         return socket.gethostbyname(socket.gethostname())
 
+    # retrieve port value specified in config/port
     def get_my_port(self):
         try:
             # if port file exists, return it
@@ -254,7 +355,6 @@ class Net(QThread):
     """
     def parse_peers(self, filename):
         nodes = []
-        debug_file = open('state/debug.txt','w')
         with open(filename, 'r') as f:
             for line in f:
                 parts = line.split()
@@ -262,8 +362,6 @@ class Net(QThread):
                     continue
                 ip, port = socket.gethostbyname(parts[0]), int(parts[1])
                 nodes.append((ip,port,self.peer_public_key_string(ip,port)))
-                debug_file.write(parts[0] + " " + self.hash_peer(ip,port) + "\n")
-        debug_file.close()
         return nodes
 
     # returns hash of ip:port peer
@@ -279,11 +377,15 @@ class Net(QThread):
     def add_peer(self, ip, port):
         hashkey = self.hash_peer(ip, port)
         if hashkey != self.hashkey:
-            peer_f = open('state/peers.txt','a')
-            debug_f = open('state/debug.txt','a')
-            peer_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], port))
-            debug_f.write("\n%s %s" % (socket.gethostbyaddr(ip)[0], hashkey))
             self.nodes.append((ip,int(port),self.peer_public_key_string(ip,port)))
+
+    def update_peerlist(self):
+        peer_f = open('state/peers.txt','w')
+        for peer in self.nodes:
+            hashkey = self.hash_peer(peer[0], peer[1])
+            if hashkey != self.hashkey:
+                peer_f.write("%s %s\n" % (socket.gethostbyaddr(peer[0])[0], peer[1]))
+        self.emit(SIGNAL("updatePeers()"))
 
     # saves public and private keys to local config directory
     def save_keys(self, rsa_key):
@@ -305,13 +407,15 @@ class Net(QThread):
         key = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
         return AnonCrypto.pub_key_to_str(key)
 
-    """ factory to return TCPHandler with a reference to Net, so it can emit a signal to GUI """
+    """ factory to return TCPHandler with a reference to the net instance, """
+    """ thus it can emit a signal to GUI and call the appropriate net functions """
     def handler_factory(self):
         def create_handler(*args, **keys):
-            return SingleTCPHandler(self, *args, **keys)
+            return TCPHandler(self, *args, **keys)
         return create_handler
 
-class SingleTCPHandler(SocketServer.BaseRequestHandler):
+# handler for each TCP connection
+class TCPHandler(SocketServer.BaseRequestHandler):
     """ One instance per connection. """
     def __init__(self, parent, *args, **keys):
         self.parent = parent
@@ -327,10 +431,15 @@ class SingleTCPHandler(SocketServer.BaseRequestHandler):
             self.parent.inform_phase(msg)
         elif function == "inform":
             self.parent.recv_voucher(msg)
+        elif function == "quit":
+            self.parent.recv_quit_voucher(msg)
+        elif function == "expel":
+            self.parent.recv_expel_voucher(msg)
         else:
             self.parent.emit(SIGNAL("messageReceived(QString)"), QString("not sure what to do with: " + str(function)))
 
-class SimpleServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
+# threaded server for receiving messages
+class ThreadedServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
     daemon_threads = True
     allow_reuse_address = True
 

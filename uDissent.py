@@ -108,9 +108,12 @@ class Ui_uDissentWindow(object):
         # make this button temporarily force debug messages for testing
         QtCore.QObject.connect(self.inviteButton, QtCore.SIGNAL("clicked()"), self.invitePressed)
         QtCore.QObject.connect(self.saveButton, QtCore.SIGNAL("clicked()"), self.savePressed)
+        QtCore.QObject.connect(self.dropButton, QtCore.SIGNAL("clicked()"), self.dropPressed)
+        QtCore.QObject.connect(self.bootButton, QtCore.SIGNAL("clicked()"), self.bootPressed)
         QtCore.QMetaObject.connectSlotsByName(uDissentWindow)
         self.add_nodes()
         QtCore.QObject.connect(self.net, QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
+        QtCore.QObject.connect(self.net, QtCore.SIGNAL("updatePeers()"), self.add_nodes)
 
     def retranslateUi(self, uDissentWindow):
         uDissentWindow.setWindowTitle(QtGui.QApplication.translate("uDissentWindow", "uDissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -129,8 +132,6 @@ class Ui_uDissentWindow(object):
 
     # display any messages populated up to GUI
     def displayMessage(self, msg):
-        if (msg == "update peers"):
-            self.add_nodes()
         self.debugEdit.append("<b>Net</b>: " + msg)
 
     def savePressed(self):
@@ -139,6 +140,9 @@ class Ui_uDissentWindow(object):
         pubkey = str(self.pubkeyEdit.toPlainText())
         self.net.save_peer_key(ip, port, pubkey)
         self.displayMessage("saved!")
+
+    def dropPressed(self):
+        self.net.drop_out()
 
     # add peers from net class to list
     def add_nodes(self):
@@ -149,7 +153,18 @@ class Ui_uDissentWindow(object):
     
     def invitePressed(self):
         peer = str(self.inviteEdit.text())
-        self.net.invite_peer(peer)
+        (ip, port) = peer.split(':')
+        ip = socket.gethostbyname(ip)
+        self.net.invite_peer(ip, int(port))
+
+    def bootPressed(self):
+        node = self.peerList.selectedItems()
+        if len(node) > 2:
+            self.displayMessage("Please select only one node please")
+        node = str(node[0].text())
+        (ip, port) = node.split(':')
+        ip = socket.gethostbyname(ip)
+        self.net.expel_peer(ip, int(port))
 
 class Main(QtGui.QMainWindow):
     def __init__(self):
