@@ -32,14 +32,10 @@ class Net(QThread):
         #load up your priv/pub keypair
         self.establish_keys()
 
-        """
-        load up your peer array with (ip, port, hashstring) peer tuples
-        hashstring will be the public key name of that peer
-        saved as state/hashstring.pub
-        """
+        # read in peers from peers file
         self.establish_peers()
 
-        # get ip and port
+        # save ip, port, and hashkey for yourself
         self.ip = self.get_my_ip()
         self.port = self.get_my_port()
         self.hashkey = self.hash_peer(self.ip, self.port)
@@ -200,15 +196,6 @@ class Net(QThread):
 
         # send to invitee packaged with who it's coming from ((ip:port), signed(text))
         AnonNet.send_to_addr(ip, int(port), marshal.dumps(("invite", cipher)))
-
-    """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
-    def accept_phase(self, ip, port, nonce):
-        # package and encrypt data
-        response = marshal.dumps((nonce,self.ip,self.port))
-        cipher = AnonCrypto.sign_with_key(self.privKey, response)
-
-        # respond with ((ip, port), encrypted_data)
-        AnonNet.send_to_addr(ip, int(port), marshal.dumps(("accept", cipher)))
 
     """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
     def accept_phase(self, ip, port, nonce):
