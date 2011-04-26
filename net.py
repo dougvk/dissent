@@ -1,17 +1,11 @@
 from __future__ import with_statement
 
-import os.path
-import random
-import socket
-import sys
-import hashlib
-import marshal
-import SocketServer
-import threading
+import os.path, random, socket, sys, hashlib, marshal, SocketServer, threading, copy, time, subprocess
 
 from anon_crypto import AnonCrypto
 from anon_net import AnonNet
 from utils import Utilities
+from shuffle_node import shuffle_node
 
 import M2Crypto.RSA
 
@@ -28,6 +22,9 @@ class Net(QThread):
         self.nodes = []
         self.privKey = ''
         self.pubKey = ''
+        self.shared_filename = "TEMP"
+        self.msg_len = 0
+        self.participants = []
 
         #load up your priv/pub keypair
         self.establish_keys()
@@ -37,25 +34,185 @@ class Net(QThread):
 
         # save ip, port, and hashkey for yourself
         self.ip = self.get_my_ip()
-        self.port = self.get_my_port()
-        self.hashkey = self.hash_peer(self.ip, self.port)
+        self.gui_port, self.com_port = self.get_my_port()
+        print "gui port: %s -- com port: %s" % (self.gui_port, self.com_port)
+        self.hashkey = self.hash_peer(self.ip, self.gui_port)
 
         # created threaded server
-        self.server = ThreadedServer((self.ip, self.port), self.handler_factory())
+        self.server = ThreadedServer((self.ip, self.gui_port), self.handler_factory())
         self.server_thread = threading.Thread(target=self.server.serve_forever)
         self.server_thread.start()
-        self.DEBUG(str(self.ip) + ":" + str(self.port))
+        self.DEBUG(str(self.ip) + ":" + str(self.gui_port))
     
     # need to implement this because Net subclasses QThread
     def run(self):
         pass
+
+    """ GUI intiiated round """
+    def initiate_round(self):
+        self.DEBUG("I initiated a dissent round! Finding collaborators...")
+
+        # get the path to the file you want to share
+        self.emit(SIGNAL("getSharedFilename()"))
+        nonce = int(1)
+        self.participants = []
+
+        """ generate temporary keys for this round, add to participants """
+        self.gen_temp_keys()
+        temp1_str = AnonCrypto.pub_key_to_str(self.pubgenkey1)
+        temp2_str = AnonCrypto.pub_key_to_str(self.pubgenkey2)
+        my_voucher = marshal.dumps((nonce,self.ip,self.gui_port,self.com_port,temp1_str,temp2_str,self.msg_len))
+        cipher = AnonCrypto.sign_with_key(self.privKey, my_voucher)
+
+        if os.path.exists(self.shared_filename):
+            self.msg_len = os.path.getsize(self.shared_filename)
+        else:
+            self.DEBUG("Not a valid file path, share something to start a round!")
+            return
+        self.DEBUG("msg len from leader is %s" % (self.msg_len))
+        self.participants.append((cipher, self.ip, self.gui_port, self.com_port, self.msg_len))
+
+        """ ask if peers are interested """
+        interest_voucher = marshal.dumps((nonce, self.ip, self.gui_port, self.com_port))
+        cipher = AnonCrypto.sign_with_key(self.privKey, interest_voucher)
+        self.broadcast_to_all_peers(marshal.dumps(("interested?",cipher)))
+        DelayTimer(1, self.prepare_round).start()
+
+    """ respond if you're going to participate in a round """
+    def recv_interest_voucher(self, data):
+        msg, key = marshal.loads(data)
+        (nonce, leader_ip, leader_gui_port, leader_com_port) = marshal.loads(msg)
+        self.DEBUG("Start round voucher from %s:%s, communicating at port %s" % (leader_ip, leader_gui_port, leader_com_port))
+
+        # get the path to the file you want to share
+        self.emit(SIGNAL("getSharedFilename()"))
+
+        hashkey = self.hash_peer(leader_ip, leader_gui_port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        """ generate temporary keys for this round so leader can aggregate """
+        self.gen_temp_keys()
+        temp1_str = AnonCrypto.pub_key_to_str(self.pubgenkey1)
+        temp2_str = AnonCrypto.pub_key_to_str(self.pubgenkey2)
+
+        if verified:
+            if os.path.exists(self.shared_filename):
+                self.msg_len = os.path.getsize(self.shared_filename)
+                self.DEBUG("You are sharing file %s" % (self.shared_filename))
+            else:
+                self.shared_filename = ""
+                self.msg_len = 128
+                self.DEBUG("Not a valid file path, continuing without sharing...")
+            self.DEBUG("Verified leader, participating as %s:%s at port %s" % (self.ip, self.gui_port, self.com_port))
+            response = marshal.dumps((nonce,self.ip,self.gui_port,self.com_port,temp1_str,temp2_str,self.msg_len))
+            cipher = AnonCrypto.sign_with_key(self.privKey, response)
+            AnonNet.send_to_addr(leader_ip, int(leader_gui_port), marshal.dumps(("interested", cipher)))
+        else:
+            self.DEBUG("Unkown leader, opting out...")
+
+    def recv_interested(self, data):
+        msg, key = marshal.loads(data)
+        (nonce, interest_ip, interest_gui_port, interest_com_port, pubkey1_str, pubkey2_str, msg_len) = marshal.loads(msg)
+        self.DEBUG("msg len from %s:%s is %s" % (interest_ip, interest_com_port, msg_len))
+
+        hashkey = self.hash_peer(interest_ip, interest_gui_port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        if verified:
+            self.DEBUG("%s:%s verified communicating at port %s" % (interest_ip, interest_gui_port, interest_com_port))
+            self.participants.append((data, interest_ip, interest_gui_port, interest_com_port, int(msg_len)))
+        else:
+            self.DEBUG("Interest from %s:%s not verified!" % (interest_ip, interest_gui_port))
+
+    def prepare_round(self):
+        prepare_voucher = marshal.dumps((int(3),int(1),copy.copy(self.participants), self.ip, self.gui_port, self.com_port))
+        cipher = AnonCrypto.sign_with_key(self.privKey, prepare_voucher)
+
+        down_index = len(self.participants) - 1
+        up_index = 1
+        self.start_node(down_index, up_index, self.participants, 0)
+
+        DelayTimer(3, self.test).start()
+        for index, participant in enumerate(self.participants):
+            down_index = index - 1
+            up_index = (index + 1) % len(self.participants)
+            if (self.ip, self.gui_port, self.com_port) != (participant[1], participant[2], participant[3]):
+                AnonNet.send_to_addr(participant[1], participant[2], marshal.dumps(("prepare:%s:%s"%(down_index, up_index),cipher)))
+                self.DEBUG("Sending prepare to peer %s:%s at port %s" % (participant[1], participant[2], participant[3]))
+
+    def recv_prepare(self, data, link_structure):
+        msg, key = marshal.loads(data)
+        (time, nonce, participants_vector, leader_ip, leader_gui_port, leader_com_port) = marshal.loads(msg)
+
+        junk, down_index, up_index = link_structure.split(':')
+        down_index, up_index = int(down_index), int(up_index)
+        my_id = 0
+        if up_index == 0:
+            my_id = down_index + 1
+        else:
+            my_id = up_index - 1
+
+        hashkey = self.hash_peer(leader_ip, leader_gui_port)
+        pubkey = M2Crypto.RSA.load_pub_key("state/%s.pub" % hashkey)
+        verified = AnonCrypto.verify_with_key(pubkey, data)
+
+        if verified:
+            self.DEBUG("Ready to prepare! down: %s, up: %s" % (down_index,up_index))
+            self.start_node(down_index, up_index, participants_vector, my_id)
+            DelayTimer(time, self.test).start()
+        else:
+            self.DEBUG("Leader not verified")
+
+    def start_node(self, down_index, up_index, participants_vector, my_id):
+        sorted_p = sorted(participants_vector, key=lambda len: len[4])
+        for p in sorted_p:
+            print p[4]
+        max_len = sorted_p[-1][4]
+        n_nodes = len(participants_vector)
+        leader_addr = (participants_vector[0][1], int(participants_vector[0][3]))
+        my_addr = (self.ip, int(self.com_port))
+        dn_addr = (participants_vector[down_index][1], int(participants_vector[down_index][3]))
+        up_addr = (participants_vector[up_index][1], int(participants_vector[up_index][3]))
+        round_id = 1
+        key_len = KEY_LENGTH
+        msg_file = None
+        if self.shared_filename == "":
+            msg_file = AnonCrypto.random_file(self.msg_len)
+        else:
+            msg_file = self.shared_filename
+        msg_len = self.msg_len
+        self.node = shuffle_node(my_id, key_len, round_id, n_nodes, my_addr, leader_addr, up_addr, dn_addr, msg_file, max_len)
+        self.DEBUG("round_id: %s id: %s n_nodes: %s\nmy_addr: %s\nleader_addr: %s\ndn_addr: %s\nup_addr: %s\nmsg_file: %s, %s" % \
+                (round_id, my_id, n_nodes, my_addr, leader_addr, dn_addr, up_addr, msg_file, max_len))
+
+    def test(self):
+        self.node.run_protocol()
+        fnames = self.node.output_filenames()
+
+    def gen_temp_keys(self):
+        key1 = AnonCrypto.random_key(KEY_LENGTH)
+        key2 = AnonCrypto.random_key(KEY_LENGTH)
+
+        key1.save_key('config/temp1.priv', None)
+        key1.save_pub_key('config/temp1.pub')
+
+        key2.save_key('config/temp2.priv', None)
+        key2.save_pub_key('config/temp2.pub')
+
+        self.privgenkey1 = M2Crypto.RSA.load_key('config/temp1.priv')
+        self.pubgenkey1 = M2Crypto.RSA.load_pub_key('config/temp1.pub')
+
+        self.privgenkey2 = M2Crypto.RSA.load_key('config/temp2.priv')
+        self.pubgenkey2 = M2Crypto.RSA.load_pub_key('config/temp2.pub')
 
     """ GUI initiated user expellation """
     def expel_peer(self, ip, port):
         self.DEBUG("IP/PORT to expel: %s:%s" % (ip, port))
 
         # create voucher for peers to save
-        expel_voucher = marshal.dumps((self.ip, self.port, ip, port, self.peer_public_key_string(ip,port)))
+        expel_voucher = marshal.dumps((self.ip, self.gui_port, ip, port, self.peer_public_key_string(ip,port)))
         cipher = AnonCrypto.sign_with_key(self.privKey, expel_voucher)
         self.broadcast_to_all_peers(marshal.dumps(("expel",cipher)))
 
@@ -66,7 +223,7 @@ class Net(QThread):
         self.DEBUG("Expelled!")
 
         # save the voucher you sent out
-        self.save_voucher(self.ip,self.port,cipher,"expelvoucher")
+        self.save_voucher(self.ip,self.gui_port,cipher,"expelvoucher")
     
     """ delete expelled peer from list given a proper voucher. save the voucher """
     def recv_expel_voucher(self, data):
@@ -87,7 +244,7 @@ class Net(QThread):
                 self.DEBUG("Expelled!")
                 self.update_peerlist()
             except:
-                if self.ip == expel_ip and int(self.port) == int(expel_port):
+                if self.ip == expel_ip and int(self.gui_port) == int(expel_port):
                     self.nodes = []
                     self.update_peerlist()
                     self.DEBUG("I'm being booted :(")
@@ -102,7 +259,7 @@ class Net(QThread):
         self.DEBUG("Dropping out of the clique")
 
         # create dropout voucher (IP, PORT, PUBKEY)
-        dropout_voucher = marshal.dumps((self.ip, self.port, self.public_key_string()))
+        dropout_voucher = marshal.dumps((self.ip, self.gui_port, self.public_key_string()))
 
         # sign it
         cipher = AnonCrypto.sign_with_key(self.privKey, dropout_voucher)
@@ -182,7 +339,7 @@ class Net(QThread):
         # create nonce, # peers, vector containing (ip, port, pubkey) of all peers
         nonce = 1
         num_peers = len(self.nodes) + 1
-        peer_vector = [(self.ip,self.port,self.public_key_string())]
+        peer_vector = [(self.ip,self.gui_port,self.public_key_string())]
         for node in self.nodes:
             hashkey = self.hash_peer(node[0], node[1])
             if hashkey != self.hashkey:
@@ -200,7 +357,7 @@ class Net(QThread):
     """ Phase 2: Respond to invite with signed (nonce, ip, port) tuple """
     def accept_phase(self, ip, port, nonce):
         # package and encrypt data
-        response = marshal.dumps((nonce,self.ip,self.port))
+        response = marshal.dumps((nonce,self.ip,self.gui_port))
         cipher = AnonCrypto.sign_with_key(self.privKey, response)
 
         # respond with ((ip, port), encrypted_data)
@@ -225,7 +382,7 @@ class Net(QThread):
             self.update_peerlist()
 
         # broadcast to all peers, save voucher
-        voucher = marshal.dumps((self.ip, self.port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port)))
+        voucher = marshal.dumps((self.ip, self.gui_port, new_ip, new_port, self.peer_public_key_string(new_ip, new_port)))
         sig_voucher = AnonCrypto.sign_with_key(self.privKey, voucher)
         self.save_voucher(new_ip, new_port, sig_voucher, "voucher")
         self.broadcast_to_all_peers(marshal.dumps(("inform", sig_voucher)))
@@ -323,16 +480,16 @@ class Net(QThread):
             # generate port file with default value
             self.DEBUG("port file doesn't exist, defaulting to " + str(DEFAULT_PORT))
             f = open('config/port', 'w')
-            f.write(str(DEFAULT_PORT))
+            f.write("%s %s" % (str(DEFAULT_PORT), str(DEFAULT_PORT + 2000)))
             f.close()
-            return int(DEFAULT_PORT)
+            return [int(DEFAULT_PORT), int(DEFAULT_PORT + 2000)]
 
     # returns port from file as integer
     def load_port(self):
         with open('config/port') as f:
             for line in f:
-                parts = line.split()
-                return int(parts[0])
+                parts = line.split(' ')
+                return [int(parts[0]), int(parts[1])]
 
     """
     parses peer.txt for ip and port then
@@ -422,6 +579,12 @@ class TCPHandler(SocketServer.BaseRequestHandler):
             self.parent.recv_quit_voucher(msg)
         elif function == "expel":
             self.parent.recv_expel_voucher(msg)
+        elif function == "interested?":
+            self.parent.recv_interest_voucher(msg)
+        elif function == "interested":
+            self.parent.recv_interested(msg)
+        elif function[:7] == "prepare":
+            self.parent.recv_prepare(msg, function)
         else:
             self.parent.emit(SIGNAL("messageReceived(QString)"), QString("not sure what to do with: " + str(function)))
 
@@ -432,3 +595,13 @@ class ThreadedServer(SocketServer.ThreadingMixIn, SocketServer.TCPServer):
 
     def __init__(self, server_address, RequestHandlerClass):
         SocketServer.TCPServer.__init__(self, server_address, RequestHandlerClass)
+
+class DelayTimer(threading.Thread):
+    def __init__(self, minutes, action):
+        self.minutes = minutes
+        self.action = action
+        threading.Thread.__init__(self)
+    
+    def run(self):
+        time.sleep(60*self.minutes)
+        self.action()

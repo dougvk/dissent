@@ -110,10 +110,13 @@ class Ui_uDissentWindow(object):
         QtCore.QObject.connect(self.saveButton, QtCore.SIGNAL("clicked()"), self.savePressed)
         QtCore.QObject.connect(self.dropButton, QtCore.SIGNAL("clicked()"), self.dropPressed)
         QtCore.QObject.connect(self.bootButton, QtCore.SIGNAL("clicked()"), self.bootPressed)
+        QtCore.QObject.connect(self.startButton, QtCore.SIGNAL("clicked()"), self.startPressed)
+        QtCore.QObject.connect(self.fileButton, QtCore.SIGNAL("clicked()"), self.showDialog)
         QtCore.QMetaObject.connectSlotsByName(uDissentWindow)
         self.add_nodes()
         QtCore.QObject.connect(self.net, QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
         QtCore.QObject.connect(self.net, QtCore.SIGNAL("updatePeers()"), self.add_nodes)
+        QtCore.QObject.connect(self.net, QtCore.SIGNAL("getSharedFilename()"), self.set_shared_filename)
 
     def retranslateUi(self, uDissentWindow):
         uDissentWindow.setWindowTitle(QtGui.QApplication.translate("uDissentWindow", "uDissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -122,7 +125,7 @@ class Ui_uDissentWindow(object):
         self.saveButton.setText(QtGui.QApplication.translate("uDissentWindow", "Save Key", None, QtGui.QApplication.UnicodeUTF8))
         self.saveEdit.setText(QtGui.QApplication.translate("uDissentWindow", "IP:PORT", None, QtGui.QApplication.UnicodeUTF8))
         self.startButton.setText(QtGui.QApplication.translate("uDissentWindow", "Start Round", None, QtGui.QApplication.UnicodeUTF8))
-        self.chatEdit.setText(QtGui.QApplication.translate("uDissentWindow", "Text to send (if no file)", None, QtGui.QApplication.UnicodeUTF8))
+        self.chatEdit.setText(QtGui.QApplication.translate("uDissentWindow", "Path to data file you wish to distribute...", None, QtGui.QApplication.UnicodeUTF8))
         self.label.setText(QtGui.QApplication.translate("uDissentWindow", "Paste the public key here to save it...", None, QtGui.QApplication.UnicodeUTF8))
         self.label_2.setText(QtGui.QApplication.translate("uDissentWindow", "Debug", None, QtGui.QApplication.UnicodeUTF8))
         self.dropButton.setText(QtGui.QApplication.translate("uDissentWindow", "Drop out of Dissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -143,6 +146,14 @@ class Ui_uDissentWindow(object):
 
     def dropPressed(self):
         self.net.drop_out()
+
+    def showDialog(self):
+        filename = QtGui.QFileDialog.getOpenFileName(self.centralwidget, 'Choose File', '/home')
+        self.chatEdit.setText(filename)
+
+    def set_shared_filename(self):
+        text = str(self.chatEdit.text())
+        self.net.shared_filename = text
 
     # add peers from net class to list
     def add_nodes(self):
@@ -165,6 +176,9 @@ class Ui_uDissentWindow(object):
         (ip, port) = node.split(':')
         ip = socket.gethostbyname(ip)
         self.net.expel_peer(ip, int(port))
+
+    def startPressed(self):
+        self.net.initiate_round()
 
 class Main(QtGui.QMainWindow):
     def __init__(self):
