@@ -25,8 +25,9 @@ from utils import Utilities
 from anon_net import AnonNet
 
 class shuffle_node():
-	def __init__(self, id, key_len, round_id, n_nodes,
-			my_addr, leader_addr, prev_addr, next_addr, msg_file, max_len, sockets = None):
+	def __init__(self, id, key_len, round_id, n_nodes, \
+			my_addr, leader_addr, prev_addr, next_addr, msg_file, max_len, participants_vector, \
+                    key1, key2, sockets = None):
 		ip,port = my_addr
 
 		self.start_time = time()
@@ -58,6 +59,10 @@ class shuffle_node():
 		logger.setLevel(logging.DEBUG)
 
 		self.pub_keys = {}
+		self.key1 = key1
+		self.key2 = key2
+		self.participants_vector = participants_vector
+		self.initialize_keys()
 
 		'''
 		# Use this to test crypto functions
@@ -100,7 +105,6 @@ class shuffle_node():
 			self.sockets = None
 
 		try:
-			self.run_phase1()
 			self.run_phase2()
 			self.run_phase3()
 			self.run_phase4()
@@ -143,97 +147,17 @@ class shuffle_node():
 	"""
 	PHASE 1
 
-	Key exchange.  This is totally unsecure.  In a real 
-	implementation every node would have the primary
-	public key of every other node before the protocol begins.
+	Set up keys.
 	"""
-
-	def run_phase1(self):
+	def initialize_keys(self):
 		self.advance_phase()
-		self.public_keys = []
-		self.generate_keys()
-
-		if self.am_leader():
-			self.debug('Leader starting phase 1')
-
-			all_msgs = self.recv_from_all(False)
-			
-			""" Get all node addrs via this msg. """
-			next_msg, self.addrs = self.unpickle_pub_keys(all_msgs)
-
-			if not self.have_all_keys():
-				raise RuntimeError, "Missing public keys"
-			self.info('Leader has all public keys')
-
-			self.broadcast_to_all_nodes(next_msg, False)
-
-			self.info('Leader sent all public keys')
-
-		else:
-			self.send_to_leader(self.phase1_msg(), False)
-		
-			""" Get all pub keys from leader. """
-			self.unpickle_keyset(self.recv_from_leader(False))
-
-			self.info('Got keys from leader!')
-
-	def unpickle_keyset(self, keys):
-		""" Non-leader nodes use this to decode leader's key msg """
-		(rem_round_id, keydict) = marshal.loads(keys)
-
-		if rem_round_id != self.round_id:
-			raise RuntimeError, "Mismatched round ids"
-
-		for i in keydict:
-			s1,s2 = keydict[i]
-
-			k1 = AnonCrypto.pub_key_from_str(s1)
-			k1.check_key()
-			self.pub_keys[i] = (k1, k1)
-			
-			k2 = AnonCrypto.pub_key_from_str(AnonCrypto.verify(self.pub_keys, s2))
-			k2.check_key()
-			self.pub_keys[i] = (k1, k2)
-
+		for index, participant in enumerate(self.participants_vector):
+			msg, key = marshal.loads(participant[0])
+			(nonce, interest_ip, interest_gui_port, interest_com_port, pubkey1_str, pubkey2_str, msg_len) = marshal.loads(msg)
+			k1 = AnonCrypto.pub_key_from_str(pubkey1_str)
+			k2 = AnonCrypto.pub_key_from_str(pubkey2_str)
+			self.pub_keys[index] = (k1, k2)
 		self.info('Unpickled public keys')
-
-	def unpickle_pub_keys(self, msgs):
-		""" Leader uses this method to unpack keys from other nodes """
-		addrs = []
-		key_dict = {}
-		key_dict[self.id] = (
-				self.key_from_file(1),
-				AnonCrypto.sign(self.id, self.key1, self.key_from_file(2)))
-
-		for data in msgs:
-			(rem_id, rem_round, rem_ip, rem_port,
-			 rem_key1, rem_key2) = marshal.loads(data)
-			self.debug("Unpickled msg from node %d" % (rem_id))
-			
-			if rem_round != self.round_id:
-				raise RuntimeError, "Mismatched round numbers! (mine: %d, other: %d)" % (
-						self.round_id, rem_round)
-
-			k1 = AnonCrypto.pub_key_from_str(rem_key1)
-			self.pub_keys[rem_id] = (k1, k1)
-			k2 = AnonCrypto.pub_key_from_str(AnonCrypto.verify(self.pub_keys, rem_key2))
-			self.pub_keys[rem_id] = (k1, k2)
-			addrs.append((rem_ip, rem_port))
-			key_dict[rem_id] = (rem_key1, rem_key2)
-		
-		return (marshal.dumps((self.round_id, key_dict)), addrs)
-
-	def phase1_msg(self):
-		""" Message that non-leader nodes send to the leader. """
-		return marshal.dumps(
-				(self.id,
-					self.round_id, 
-					self.ip,
-					self.port,
-					self.key_from_file(1),
-					AnonCrypto.sign(self.id, self.key1, self.key_from_file(2))))
-	
-		return marshal.dumps((self.round_id, newdict))
 
 	"""
 	PHASE 2

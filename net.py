@@ -6,6 +6,7 @@ from anon_crypto import AnonCrypto
 from anon_net import AnonNet
 from utils import Utilities
 import shuffle_node
+import bulk_node
 
 import M2Crypto.RSA
 
@@ -16,7 +17,7 @@ from PyQt4.QtNetwork import *
 KEY_LENGTH = 1024
 DEFAULT_PORT = 9000
 INTEREST_WAIT = 1
-PREPARE_WAIT = 3
+PREPARE_WAIT = 1
 
 class Net(QThread):
     def __init__(self, parent):
@@ -136,6 +137,10 @@ class Net(QThread):
 
     """ called INTEREST_WAIT minutes after GUI-initiated round """
     def prepare_round(self):
+        # can't start round without 3 or more peers
+        if len(self.participants) < 3:
+            return
+
         prepare_voucher = marshal.dumps((int(PREPARE_WAIT),int(1),copy.copy(self.participants), self.ip, self.gui_port, self.com_port))
         cipher = AnonCrypto.sign_with_key(self.privKey, prepare_voucher)
 
@@ -176,10 +181,13 @@ class Net(QThread):
 
     """ prepares a node to be run via start_protocol() """
     def start_node(self, down_index, up_index, participants_vector, my_id):
+        # sort the vector by msg length to get the max_len
         sorted_p = sorted(participants_vector, key=lambda len: len[4])
         for p in sorted_p:
             print p[4]
         max_len = sorted_p[-1][4]
+
+
         n_nodes = len(participants_vector)
         leader_addr = (participants_vector[0][1], int(participants_vector[0][3]))
         my_addr = (participants_vector[my_id][1], int(participants_vector[my_id][3]))
@@ -188,13 +196,17 @@ class Net(QThread):
         round_id = 1
         key_len = KEY_LENGTH
         msg_file = None
+
+        # create random file if none has been shared
         if os.path.exists(self.shared_filename):
             msg_file = self.shared_filename
         else:
             msg_file = AnonCrypto.random_file(self.msg_len)
         msg_len = self.msg_len
-        self.node = shuffle_node.shuffle_node(my_id, key_len, round_id, n_nodes, \
-                my_addr, leader_addr, dn_addr, up_addr, msg_file, max_len)
+        #self.node = shuffle_node.shuffle_node(my_id, key_len, round_id, n_nodes, \
+                #my_addr, leader_addr, dn_addr, up_addr, msg_file, max_len, participants_vector, self.privgenkey1, self.privgenkey2)
+        self.node = bulk_node.bulk_node(my_id, key_len, round_id, n_nodes, \
+                my_addr, leader_addr, dn_addr, up_addr, msg_file, participants_vector, self.privgenkey1, self.privgenkey2)
         self.DEBUG("round_id: %s id: %s n_nodes: %s my_addr: %s leader_addr: %s dn_addr: %s up_addr: %s msg_file: %s, %s" % \
                 (round_id, my_id, n_nodes, my_addr, leader_addr, dn_addr, up_addr, msg_file, max_len))
 
@@ -442,7 +454,13 @@ class Net(QThread):
     def broadcast_to_all_peers(self, voucher):
         for node in self.nodes:
             ip, port = node[0], node[1]
-            AnonNet.send_to_addr(ip, port, voucher)
+            sock = socket.socket(socket.AF_INET, socket.SOCK_STREAM)
+            try:
+                sock.connect((ip,int(port)))
+                AnonNet.send_to_socket(sock, voucher)
+                sock.close()
+            except:
+                self.DEBUG("peer %s:%s not available" % (ip, port))
 
     # create/load necessary files to save peer state
     def establish_peers(self):
