@@ -88,6 +88,7 @@ class Ui_uDissentWindow(object):
         self.verticalLayout_3.addWidget(self.label_3)
         self.peerList = QtGui.QListWidget(self.verticalLayoutWidget_3)
         self.peerList.setObjectName("peerList")
+        self.peerList.setSelectionMode(QtGui.QAbstractItemView.MultiSelection)
         self.verticalLayout_3.addWidget(self.peerList)
         self.bootButton = QtGui.QPushButton(self.verticalLayoutWidget_3)
         self.bootButton.setObjectName("bootButton")
@@ -117,6 +118,7 @@ class Ui_uDissentWindow(object):
         QtCore.QObject.connect(self.net, QtCore.SIGNAL("messageReceived(QString)"), self.displayMessage)
         QtCore.QObject.connect(self.net, QtCore.SIGNAL("updatePeers()"), self.add_nodes)
         QtCore.QObject.connect(self.net, QtCore.SIGNAL("getSharedFilename()"), self.set_shared_filename)
+        QtCore.QObject.connect(self.net, QtCore.SIGNAL("getDistrustedPeers()"), self.get_distrusted_peers)
 
     def retranslateUi(self, uDissentWindow):
         uDissentWindow.setWindowTitle(QtGui.QApplication.translate("uDissentWindow", "uDissent", None, QtGui.QApplication.UnicodeUTF8))
@@ -154,6 +156,16 @@ class Ui_uDissentWindow(object):
     def set_shared_filename(self):
         text = str(self.chatEdit.text())
         self.net.shared_filename = text
+    
+    def get_distrusted_peers(self):
+        nodes = self.peerList.selectedItems()
+        peers = []
+        for index in range(0, len(nodes)):
+            peer = str(nodes[index].text())
+            (ip, port) = peer.split(':')
+            ip = socket.gethostbyname(ip)
+            peers.append((ip, port))
+        self.net.distrusted_peers = peers
 
     # add peers from net class to list
     def add_nodes(self):

@@ -153,7 +153,7 @@ class shuffle_node():
 		self.advance_phase()
 		for index, participant in enumerate(self.participants_vector):
 			msg, key = marshal.loads(participant[0])
-			(nonce, interest_ip, interest_gui_port, interest_com_port, pubkey1_str, pubkey2_str, msg_len) = marshal.loads(msg)
+			(nonce, interest_ip, interest_gui_port, interest_com_port, pubkey1_str, pubkey2_str) = marshal.loads(msg)
 			k1 = AnonCrypto.pub_key_from_str(pubkey1_str)
 			k2 = AnonCrypto.pub_key_from_str(pubkey2_str)
 			self.pub_keys[index] = (k1, k2)

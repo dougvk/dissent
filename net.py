@@ -18,6 +18,7 @@ KEY_LENGTH = 1024
 DEFAULT_PORT = 9000
 INTEREST_WAIT = 1
 PREPARE_WAIT = 1
+DEFAULT_LENGTH = 128
 
 class Net(QThread):
     def __init__(self, parent):
@@ -26,8 +27,8 @@ class Net(QThread):
         self.privKey = ''
         self.pubKey = ''
         self.shared_filename = ''
-        self.msg_len = 0
         self.participants = []
+        self.distrusted_peers = []
 
         #load up your priv/pub keypair
         self.establish_keys()
@@ -59,6 +60,7 @@ class Net(QThread):
         self.emit(SIGNAL("getSharedFilename()"))
         nonce = int(1)
         self.participants = []
+        self.distrusted_peers = []
 
         """ generate temporary keys for this round, add to participants """
         self.gen_temp_keys()
@@ -66,18 +68,19 @@ class Net(QThread):
         temp2_str = AnonCrypto.pub_key_to_str(self.pubgenkey2)
 
         """ initiate round with a signed voucher containing relevant information """
-        my_voucher = marshal.dumps((nonce,self.ip,self.gui_port,self.com_port,temp1_str,temp2_str,self.msg_len))
+        my_voucher = marshal.dumps((nonce,self.ip,self.gui_port,self.com_port,temp1_str,temp2_str))
         cipher = AnonCrypto.sign_with_key(self.privKey, my_voucher)
 
         """ make sure you have something to share first """
         if os.path.exists(self.shared_filename):
-            self.msg_len = os.path.getsize(self.shared_filename)
+            self.DEBUG("You are sharing file %s" % (self.shared_filename))
         else:
             self.DEBUG("Not a valid file path, share something to start a round!")
             return
 
         # add yourself as leader in the participants list (entry 0)
-        self.participants.append((cipher, self.ip, self.gui_port, self.com_port, self.msg_len))
+        self.participants.append((cipher, self.ip, self.gui_port, self.com_port))
+        self.emit(SIGNAL("getDistrustedPeers()"))
 
         # ask if peers are interested
         interest_voucher = marshal.dumps((nonce, self.ip, self.gui_port, self.com_port))
@@ -106,15 +109,13 @@ class Net(QThread):
         """ default to random file of 128 bytes if you don't have anything to share """
         if verified:
             if os.path.exists(self.shared_filename):
-                self.msg_len = os.path.getsize(self.shared_filename)
                 self.DEBUG("You are sharing file %s" % (self.shared_filename))
             else:
-                self.msg_len = 128
                 self.DEBUG("Not a valid file path, continuing without sharing...")
 
             # respond with your interest
             self.DEBUG("Verified leader, participating as %s:%s at port %s" % (self.ip, self.gui_port, self.com_port))
-            response = marshal.dumps((nonce,self.ip,self.gui_port,self.com_port,temp1_str,temp2_str,self.msg_len))
+            response = marshal.dumps((nonce,self.ip,self.gui_port,self.com_port,temp1_str,temp2_str))
             cipher = AnonCrypto.sign_with_key(self.privKey, response)
             AnonNet.send_to_addr(leader_ip, int(leader_gui_port), marshal.dumps(("interested", cipher)))
         else:
@@ -123,15 +124,17 @@ class Net(QThread):
     """ leader has received an interest voucher """
     def recv_interested(self, data):
         msg, key = marshal.loads(data)
-        (nonce, interest_ip, interest_gui_port, interest_com_port, pubkey1_str, pubkey2_str, msg_len) = marshal.loads(msg)
-        self.DEBUG("msg len from %s:%s is %s" % (interest_ip, interest_com_port, msg_len))
+        (nonce, interest_ip, interest_gui_port, interest_com_port, pubkey1_str, pubkey2_str) = marshal.loads(msg)
+
+        self.distrusted_peers = []
 
         verified = self.verify(interest_ip, interest_gui_port, data)
 
-        # if verified, add to participants vector
+        # if verified, add to participants vector and retreive distrusted peerlist
         if verified:
             self.DEBUG("%s:%s verified communicating at port %s" % (interest_ip, interest_gui_port, interest_com_port))
-            self.participants.append((data, interest_ip, interest_gui_port, interest_com_port, int(msg_len)))
+            self.emit(SIGNAL("getDistrustedPeers()"))
+            self.participants.append((data, interest_ip, interest_gui_port, interest_com_port))
         else:
             self.DEBUG("Interest from %s:%s not verified!" % (interest_ip, interest_gui_port))
 
@@ -139,6 +142,7 @@ class Net(QThread):
     def prepare_round(self):
         # can't start round without 3 or more peers
         if len(self.participants) < 3:
+            self.DEBUG("Not enough peers to start round!")
             return
 
         prepare_voucher = marshal.dumps((int(PREPARE_WAIT),int(1),copy.copy(self.participants), self.ip, self.gui_port, self.com_port))
@@ -181,13 +185,6 @@ class Net(QThread):
 
     """ prepares a node to be run via start_protocol() """
     def start_node(self, down_index, up_index, participants_vector, my_id):
-        # sort the vector by msg length to get the max_len
-        sorted_p = sorted(participants_vector, key=lambda len: len[4])
-        for p in sorted_p:
-            print p[4]
-        max_len = sorted_p[-1][4]
-
-
         n_nodes = len(participants_vector)
         leader_addr = (participants_vector[0][1], int(participants_vector[0][3]))
         my_addr = (participants_vector[my_id][1], int(participants_vector[my_id][3]))
@@ -195,20 +192,33 @@ class Net(QThread):
         up_addr = (participants_vector[up_index][1], int(participants_vector[up_index][3]))
         round_id = 1
         key_len = KEY_LENGTH
+
+        """ if distrusted peer is participating, then don't share file (if one is chosen) """
+        self.DEBUG("Distrusted peers: %s" % self.distrusted_peers)
         msg_file = None
+        trusted = True
+        if os.path.exists(self.shared_filename):
+            for peer in participants_vector:
+                for distrusted_peer in self.distrusted_peers:
+                    (d_ip, d_port) = distrusted_peer
+                    (p_ip, p_port) = peer[1], peer[2]
+                    if d_ip == p_ip and str(d_port) == str(p_port):
+                        self.DEBUG("Not sharing my file because peer %s:%s is participating" % (p_ip, p_port))
+                        trusted = False
+                        break
+                if not trusted: break
 
         # create random file if none has been shared
-        if os.path.exists(self.shared_filename):
+        if trusted and os.path.exists(self.shared_filename):
             msg_file = self.shared_filename
         else:
-            msg_file = AnonCrypto.random_file(self.msg_len)
-        msg_len = self.msg_len
-        #self.node = shuffle_node.shuffle_node(my_id, key_len, round_id, n_nodes, \
-                #my_addr, leader_addr, dn_addr, up_addr, msg_file, max_len, participants_vector, self.privgenkey1, self.privgenkey2)
+            msg_file = AnonCrypto.random_file(DEFAULT_LENGTH)
+
+        # initialize node
         self.node = bulk_node.bulk_node(my_id, key_len, round_id, n_nodes, \
                 my_addr, leader_addr, dn_addr, up_addr, msg_file, participants_vector, self.privgenkey1, self.privgenkey2)
-        self.DEBUG("round_id: %s id: %s n_nodes: %s my_addr: %s leader_addr: %s dn_addr: %s up_addr: %s msg_file: %s, %s" % \
-                (round_id, my_id, n_nodes, my_addr, leader_addr, dn_addr, up_addr, msg_file, max_len))
+        self.DEBUG("round_id: %s id: %s n_nodes: %s my_addr: %s leader_addr: %s dn_addr: %s up_addr: %s msg_file: %s" % \
+                (round_id, my_id, n_nodes, my_addr, leader_addr, dn_addr, up_addr, msg_file))
 
     def run_protocol(self):
         self.node.run_protocol()
